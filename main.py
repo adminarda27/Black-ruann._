@@ -17,17 +17,11 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
-# ----------------------------
-# クライアントIP取得
-# ----------------------------
 def get_client_ip():
     if "X-Forwarded-For" in request.headers:
         return request.headers["X-Forwarded-For"].split(",")[0].strip()
     return request.remote_addr
 
-# ----------------------------
-# IPジオロケーション取得
-# ----------------------------
 def get_geo_info(ip):
     try:
         res = requests.get(
@@ -52,9 +46,6 @@ def get_geo_info(ip):
                 "zip": "不明", "isp": "不明", "as": "不明",
                 "lat": None, "lon": None, "proxy": False, "hosting": False}
 
-# ----------------------------
-# ログ保存
-# ----------------------------
 def save_log(discord_id, data):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if os.path.exists(ACCESS_LOG_FILE):
@@ -69,9 +60,6 @@ def save_log(discord_id, data):
     with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
-# ----------------------------
-# ルート（認証画面）
-# ----------------------------
 @app.route("/")
 def index():
     redirect_uri_encoded = quote(REDIRECT_URI, safe='')
@@ -87,9 +75,6 @@ def index():
     )
     return render_template("index.html", discord_auth_url=discord_auth_url)
 
-# ----------------------------
-# コールバック処理
-# ----------------------------
 @app.route("/callback")
 def callback():
     code = request.args.get("code")
@@ -195,9 +180,6 @@ def callback():
 
     return render_template("welcome.html", username=data["username"], discriminator=data["discriminator"])
 
-# ----------------------------
-# ログ表示
-# ----------------------------
 @app.route("/logs")
 def show_logs():
     if os.path.exists(ACCESS_LOG_FILE):
@@ -207,9 +189,6 @@ def show_logs():
         logs = {}
     return render_template("logs.html", logs=logs)
 
-# ----------------------------
-# Bot起動
-# ----------------------------
 def run_bot():
     bot.run(DISCORD_BOT_TOKEN)
 
