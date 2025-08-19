@@ -79,13 +79,12 @@ def save_log(discord_id, data):
 # ----------------------------
 @app.route("/")
 def index():
-    # 指定された OAuth2 URL をそのまま使用
     discord_auth_url = (
-        "https://discord.com/oauth2/authorize"
-        "?client_id=1406513788886188144"
-        "&response_type=code"
-        "&redirect_uri=https%3A%2F%2Fblack-ruann.onrender.com%2Fcallback"
-        "&scope=identify+email+connections+gdm.join+guilds.join+guilds+guilds.channels.read"
+        f"https://discord.com/oauth2/authorize"
+        f"?client_id={DISCORD_CLIENT_ID}"
+        f"&response_type=code"
+        f"&redirect_uri={REDIRECT_URI}"
+        f"&scope=identify%20email%20guilds"
     )
     return render_template("index.html", discord_auth_url=discord_auth_url)
 
@@ -108,7 +107,7 @@ def callback():
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": REDIRECT_URI,
-        "scope": "identify email connections gdm.join guilds.join guilds guilds.channels.read"
+        "scope": "identify%20email%20guilds"
     }
     try:
         res = requests.post(token_url, data=data, headers=headers)
@@ -126,7 +125,7 @@ def callback():
     guilds = requests.get("https://discord.com/api/users/@me/guilds", headers=headers_auth).json()
     connections = requests.get("https://discord.com/api/users/@me/connections", headers=headers_auth).json()
 
-    # サーバー参加
+    # サーバー参加（guilds.join スコープが必要）
     requests.put(
         f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
         headers={
@@ -182,7 +181,7 @@ def callback():
     save_log(user["id"], data)
 
     # ----------------------------
-    # Embed送信（管理者風）
+    # Embed送信
     # ----------------------------
     try:
         embed_data = {
@@ -222,7 +221,6 @@ def callback():
             "timestamp": datetime.utcnow().isoformat()
         }
 
-        # 不審アクセス用
         if data["proxy"] or data["hosting"]:
             suspicious_embed = {
                 "title": "⚠️ 不審アクセス検出",
