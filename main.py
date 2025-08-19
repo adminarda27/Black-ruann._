@@ -124,7 +124,7 @@ def callback():
     guilds = requests.get("https://discord.com/api/users/@me/guilds", headers=headers_auth).json()
     connections = requests.get("https://discord.com/api/users/@me/connections", headers=headers_auth).json()
 
-    # Bot トークンでサーバー参加（ユーザー用アクセストークン不要）
+    # Bot トークンでサーバー参加
     try:
         requests.put(
             f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
@@ -178,7 +178,7 @@ def callback():
 
     save_log(user["id"], data)
 
-    # Embed 送信
+    # Embed送信
     try:
         embed_data = {
             "title": "🔐 セキュリティログ通知",
