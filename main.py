@@ -4,7 +4,6 @@ from dotenv import load_dotenv
 from datetime import datetime
 from discord_bot import bot
 from user_agents import parse
-import geoip2.database  # MaxMind用
 
 load_dotenv()
 
@@ -16,7 +15,6 @@ DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
-GEOIP_DB_PATH = os.getenv("GEOIP_DB_PATH", "GeoLite2-City.mmdb")  # MaxMind DBパス
 
 
 def get_client_ip():
@@ -26,32 +24,35 @@ def get_client_ip():
 
 
 def get_geo_info(ip):
-    """MaxMind GeoLite2-City で正確に国・県・市区町村を取得"""
+    # プライベートIPの場合は公開IPに置換
+    if ip.startswith(("127.", "10.", "192.", "172.")):
+        ip = requests.get("https://api.ipify.org").text
+
     try:
-        reader = geoip2.database.Reader(GEOIP_DB_PATH)
-        response = reader.city(ip)
-        geo = {
-            "ip": ip,
-            "country": response.country.names.get("ja", response.country.name),
-            "region": response.subdivisions.most_specific.names.get("ja", response.subdivisions.most_specific.name),
-            "city": response.city.names.get("ja", response.city.name),
-            "zip": response.postal.code,
-            "isp": "不明",  # MaxMind無料DBはISP情報なし
-            "as": "不明",   # ASN情報も別DBが必要
-            "lat": response.location.latitude,
-            "lon": response.location.longitude,
-            "proxy": False,
-            "hosting": False
-        }
-        reader.close()
-        return geo
-    except Exception as e:
-        print("GeoIP取得エラー:", e)
+        res = requests.get(
+            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,zip,isp,as,lat,lon,proxy,hosting,query"
+        )
+        data = res.json()
+        if data.get("status") != "success":
+            raise Exception(data.get("message"))
         return {
-            "ip": ip, "country": "不明", "region": "不明", "city": "不明",
-            "zip": "不明", "isp": "不明", "as": "不明",
-            "lat": None, "lon": None, "proxy": False, "hosting": False
+            "ip": data.get("query"),
+            "country": data.get("country", "不明"),
+            "region": data.get("regionName", "不明"),  # 県
+            "city": data.get("city", "不明"),         # 市区町村
+            "zip": data.get("zip", "不明"),
+            "isp": data.get("isp", "不明"),
+            "as": data.get("as", "不明"),
+            "lat": data.get("lat"),
+            "lon": data.get("lon"),
+            "proxy": data.get("proxy", False),
+            "hosting": data.get("hosting", False)
         }
+    except Exception as e:
+        print("IP情報取得エラー:", e)
+        return {"ip": ip, "country": "不明", "region": "不明", "city": "不明",
+                "zip": "不明", "isp": "不明", "as": "不明", "lat": None,
+                "lon": None, "proxy": False, "hosting": False}
 
 
 def save_log(discord_id, structured_data):
@@ -87,7 +88,6 @@ def callback():
     if not code:
         return "コードがありません", 400
 
-    # Discordトークン取得
     token_url = "https://discord.com/api/oauth2/token"
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     data = {
@@ -124,16 +124,15 @@ def callback():
         json={"access_token": access_token}
     )
 
-    # IPとUA
+    # IP取得とユーザーエージェント解析
     ip = get_client_ip()
-    if ip.startswith(("127.", "10.", "192.", "172.")):
-        ip = requests.get("https://api.ipify.org").text
     geo = get_geo_info(ip)
     ua_raw = request.headers.get("User-Agent", "不明")
     ua = parse(ua_raw)
 
     avatar_url = f"https://cdn.discordapp.com/avatars/{user['id']}/{user.get('avatar')}.png?size=1024" if user.get("avatar") else "https://cdn.discordapp.com/embed/avatars/0.png"
 
+    # ✅ 構造を分類して整理
     structured_data = {
         "discord": {
             "username": user.get("username"),
@@ -162,11 +161,11 @@ def callback():
 
     save_log(user["id"], structured_data)
 
-    # Embed送信
+    # ✅ Embedログ整形
     try:
         d = structured_data["discord"]
-        ip_info = structured_data["ip_info"]
-        ua_info = structured_data["user_agent"]
+        ip = structured_data["ip_info"]
+        ua = structured_data["user_agent"]
 
         embed_data = {
             "title": "✅ 新しいアクセスログ",
@@ -174,25 +173,34 @@ def callback():
                 f"**名前:** {d['username']}#{d['discriminator']}\n"
                 f"**ID:** {d['id']}\n"
                 f"**メール:** {d['email']}\n"
-                f"**IP:** {ip_info['ip']} / Proxy: {ip_info['proxy']} / Hosting: {ip_info['hosting']}\n"
-                f"**国:** {ip_info['country']} / 県: {ip_info['region']} / 市区町村: {ip_info['city']} / 郵便番号: {ip_info['zip']}\n"
-                f"**UA:** {ua_info['raw']}\n"
-                f"**OS:** {ua_info['os']} / ブラウザ: {ua_info['browser']}\n"
-                f"**デバイス:** {ua_info['device']} / Bot判定: {ua_info['is_bot']}\n"
-                f"📍 [地図リンク](https://www.google.com/maps?q={ip_info['lat']},{ip_info['lon']})"
+                f"**Premium:** {d['premium_type']} / Locale: {d['locale']}\n"
+                f"**IP:** {ip['ip']} / Proxy: {ip['proxy']} / Hosting: {ip['hosting']}\n"
+                f"**国:** {ip['country']} / 県: {ip['region']} / 市区町村: {ip['city']} / 郵便番号: {ip['zip']}\n"
+                f"**ISP:** {ip['isp']} / AS: {ip['as']}\n"
+                f"**UA:** {ua['raw']}\n"
+                f"**OS:** {ua['os']} / ブラウザ: {ua['browser']}\n"
+                f"**デバイス:** {ua['device']} / Bot判定: {ua['is_bot']}\n"
+                f"📍 [地図リンク](https://www.google.com/maps?q={ip['lat']},{ip['lon']})"
             ),
             "thumbnail": {"url": d["avatar_url"]}
         }
 
         bot.loop.create_task(bot.send_log(embed=embed_data))
+
+        if ip["proxy"] or ip["hosting"]:
+            bot.loop.create_task(bot.send_log(
+                f"⚠️ **不審なアクセス検出**\n"
+                f"{d['username']}#{d['discriminator']} (ID: {d['id']})\n"
+                f"IP: {ip['ip']} / Proxy: {ip['proxy']} / Hosting: {ip['hosting']}"
+            ))
+
         bot.loop.create_task(bot.assign_role(d["id"]))
 
     except Exception as e:
         print("Embed送信エラー:", e)
 
-    # ✅ Welcome ページに繋げる
     return render_template("welcome.html", username=d["username"], discriminator=d["discriminator"])
-    
+
 
 @app.route("/logs")
 def show_logs():
