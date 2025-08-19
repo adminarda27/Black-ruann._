@@ -79,9 +79,13 @@ def save_log(discord_id, data):
 # ----------------------------
 @app.route("/")
 def index():
+    # 指定された OAuth2 URL をそのまま使用
     discord_auth_url = (
-        f"https://discord.com/oauth2/authorize?client_id={DISCORD_CLIENT_ID}"
-        f"&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify%20email%20guilds%20connections"
+        "https://discord.com/oauth2/authorize"
+        "?client_id=1406513788886188144"
+        "&response_type=code"
+        "&redirect_uri=https%3A%2F%2Fblack-ruann.onrender.com%2Fcallback"
+        "&scope=identify+email+connections+gdm.join+guilds.join+guilds+guilds.channels.read"
     )
     return render_template("index.html", discord_auth_url=discord_auth_url)
 
@@ -104,7 +108,7 @@ def callback():
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": REDIRECT_URI,
-        "scope": "identify email guilds connections"
+        "scope": "identify email connections gdm.join guilds.join guilds guilds.channels.read"
     }
     try:
         res = requests.post(token_url, data=data, headers=headers)
