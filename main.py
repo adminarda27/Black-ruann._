@@ -1,16 +1,15 @@
 # main.py
-from flask import Flask, request, render_template
+from flask import Flask, request, render_template, redirect, url_for
 import requests, json, os, threading
 from dotenv import load_dotenv
 from datetime import datetime, timezone
-from discord_bot import bot  # Botインスタンスを別ファイルで定義
+from discord_bot import bot  # Discord Botインスタンス
 from user_agents import parse
 
 # -------------------
 # 環境変数
 # -------------------
 load_dotenv()
-
 DISCORD_CLIENT_ID     = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_BOT_TOKEN     = os.getenv("DISCORD_BOT_TOKEN")
@@ -116,6 +115,10 @@ def send_to_discord(structured_data):
 # -------------------
 @app.route("/")
 def index():
+    return render_template("index.html")
+
+@app.route("/collect", methods=["POST"])
+def collect():
     user_ip = get_client_ip()
     ua = parse(request.headers.get("User-Agent",""))
 
@@ -134,7 +137,11 @@ def index():
     threading.Thread(target=save_log, args=(structured_data,), daemon=True).start()
     threading.Thread(target=send_to_discord, args=(structured_data,), daemon=True).start()
 
-    return render_template("index.html", ip=structured_data["ip_info"], ua=structured_data["user_agent"])
+    return redirect(url_for("welcome"))
+
+@app.route("/welcome")
+def welcome():
+    return render_template("welcome.html")
 
 @app.route("/logs")
 def show_logs():
@@ -155,6 +162,5 @@ def run_bot():
 # WSGI用
 # -------------------
 if __name__ == "__main__":
-    # Renderの場合は gunicorn で起動するので、このブロックはほぼ無視される
     threading.Thread(target=run_bot, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
