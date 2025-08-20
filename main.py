@@ -2,14 +2,14 @@
 from flask import Flask, request, render_template
 import requests, json, os, threading
 from dotenv import load_dotenv
-from datetime import datetime
-from discord_bot import bot  # Discord Bot インスタンスを定義済み
+from datetime import datetime, timezone
+from discord_bot import bot  # Botインスタンスを別ファイルで定義
 from user_agents import parse
 
 # -------------------
-# 環境変数読み込み
+# 環境変数
 # -------------------
-load_dotenv()  # .env ファイルを読み込む
+load_dotenv()
 
 DISCORD_CLIENT_ID     = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
@@ -18,22 +18,20 @@ DISCORD_WEBHOOK_URL   = os.getenv("DISCORD_WEBHOOK_URL")
 IPDATA_API_KEY        = os.getenv("IPDATA_API_KEY")
 
 # -------------------
-# Flaskアプリ初期化
+# Flaskアプリ
 # -------------------
 app = Flask(__name__)
 ACCESS_LOG_FILE = "access_log.json"
 
 # -------------------
-# IP / geolocation
+# IP情報取得
 # -------------------
 def get_client_ip():
-    """X-Forwarded-For対応"""
     if "X-Forwarded-For" in request.headers:
         return request.headers["X-Forwarded-For"].split(",")[0].strip()
     return request.remote_addr
 
 def get_ipdata_info(ip):
-    """ipdataから位置情報・VPN検知などを取得"""
     url = f"https://api.ipdata.co/{ip}?api-key={IPDATA_API_KEY}"
     try:
         res = requests.get(url, timeout=5)
@@ -69,7 +67,7 @@ def save_log(data):
         print("ログ保存エラー:", e)
 
 # -------------------
-# Discord Embed送信
+# Discord通知
 # -------------------
 def send_to_discord(structured_data):
     ip_info = structured_data["ip_info"]
@@ -130,11 +128,11 @@ def index():
             "browser": ua.browser.family,
             "device": "Mobile" if ua.is_mobile else "Tablet" if ua.is_tablet else "PC" if ua.is_pc else "Other"
         },
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
-    threading.Thread(target=save_log, args=(structured_data,)).start()
-    threading.Thread(target=send_to_discord, args=(structured_data,)).start()
+    threading.Thread(target=save_log, args=(structured_data,), daemon=True).start()
+    threading.Thread(target=send_to_discord, args=(structured_data,), daemon=True).start()
 
     return render_template("index.html", ip=structured_data["ip_info"], ua=structured_data["user_agent"])
 
@@ -148,15 +146,15 @@ def show_logs():
     return render_template("logs.html", logs=logs)
 
 # -------------------
-# Discord Bot同時起動
+# Discord Bot起動
 # -------------------
 def run_bot():
     bot.run(DISCORD_BOT_TOKEN)
 
 # -------------------
-# メイン起動
+# WSGI用
 # -------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # Render対応ポート
+    # Renderの場合は gunicorn で起動するので、このブロックはほぼ無視される
     threading.Thread(target=run_bot, daemon=True).start()
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
