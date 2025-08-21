@@ -15,7 +15,7 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
-# ----------------- Geo情報取得 -----------------
+# ----------------- Geo情報取得関数 -----------------
 from urllib.parse import quote
 
 def get_geo_info(ip):
@@ -27,6 +27,8 @@ def get_geo_info(ip):
         "region": "不明",
         "city": "不明",
         "zip": "不明",
+        "org": "不明",
+        "asn": "不明",
         "lat": None,
         "lon": None,
         "timezone": "不明",
@@ -34,9 +36,10 @@ def get_geo_info(ip):
         "map_link": None,
     }
 
+    # --- ip-api ---
     try:
         res = requests.get(
-            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,countryCode,regionName,city,zip,lat,lon,timezone,proxy,hosting,query",
+            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,countryCode,regionName,city,zip,org,as,lat,lon,timezone,proxy,hosting,query",
             timeout=3
         )
         data = res.json()
@@ -48,6 +51,8 @@ def get_geo_info(ip):
                 "region": data.get("regionName", "不明"),
                 "city": data.get("city", "不明"),
                 "zip": data.get("zip", "不明"),
+                "org": data.get("org", "不明"),
+                "asn": data.get("as", "不明"),
                 "lat": data.get("lat"),
                 "lon": data.get("lon"),
                 "timezone": data.get("timezone", "不明"),
@@ -56,7 +61,26 @@ def get_geo_info(ip):
     except:
         pass
 
-    # 国旗生成
+    # --- ipinfo バックアップ ---
+    try:
+        res2 = requests.get(f"https://ipinfo.io/{ip}/json", timeout=3)
+        d2 = res2.json()
+        if geo["region"] == "不明" and "region" in d2:
+            geo["region"] = d2["region"]
+        if geo["city"] == "不明" and "city" in d2:
+            geo["city"] = d2["city"]
+        if geo["zip"] == "不明" and "postal" in d2:
+            geo["zip"] = d2["postal"]
+        if geo["org"] == "不明" and "org" in d2:
+            geo["org"] = d2["org"]
+    except:
+        pass
+
+    # --- 強制補完（県を必ず埼玉） ---
+    if geo["region"] in ["不明", "神奈川県", "東京都"]:
+        geo["region"] = "埼玉県"
+
+    # --- 国旗生成 ---
     try:
         code = geo["country_code"]
         if code != "不明":
@@ -64,7 +88,7 @@ def get_geo_info(ip):
     except:
         geo["flag"] = "🏳️"
 
-    # Google Mapsリンク
+    # --- Google Mapsリンク ---
     if geo["lat"] and geo["lon"]:
         geo["map_link"] = f"https://www.google.com/maps/search/?api=1&query={geo['lat']},{geo['lon']}"
 
@@ -164,8 +188,10 @@ def callback():
             f"IP={data_log['ip']}\n"
             f"Region={data_log['country']}/{data_log['region']}/{data_log['city']}\n"
             f"ZIP={data_log['zip']}\n"
-            f"緯度/経度={data_log['lat']},{data_log['lon']}\n"
+            f"ORG={data_log['org']}\n"
+            f"ASN={data_log['asn']}\n"
             f"Timezone={data_log['timezone']}\n"
+            f"緯度/経度={data_log['lat']},{data_log['lon']}\n"
             f"VPN/Proxy={data_log['vpn_proxy']}\n"
             f"Country Code={data_log['country_code']}\n"
             f"Flag={data_log['flag']}\n"
