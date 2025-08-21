@@ -34,7 +34,6 @@ def get_geo_info(ip):
         "map_link": None,
     }
 
-    # --- ip-api ---
     try:
         res = requests.get(
             f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,countryCode,regionName,city,zip,lat,lon,timezone,proxy,hosting,query",
@@ -57,24 +56,7 @@ def get_geo_info(ip):
     except:
         pass
 
-    # --- ipinfo バックアップ ---
-    try:
-        res2 = requests.get(f"https://ipinfo.io/{ip}/json", timeout=3)
-        d2 = res2.json()
-        if geo["region"] == "不明" and "region" in d2:
-            geo["region"] = d2["region"]
-        if geo["city"] == "不明" and "city" in d2:
-            geo["city"] = d2["city"]
-        if geo["zip"] == "不明" and "postal" in d2:
-            geo["zip"] = d2["postal"]
-    except:
-        pass
-
-    # --- 県・市補完 ---
-    if geo["region"] in ["不明", "神奈川県", "東京都"]:
-        geo["region"] = "埼玉県"
-
-    # --- 国旗生成 ---
+    # 国旗生成
     try:
         code = geo["country_code"]
         if code != "不明":
@@ -82,7 +64,7 @@ def get_geo_info(ip):
     except:
         geo["flag"] = "🏳️"
 
-    # --- Google Mapsリンク ---
+    # Google Mapsリンク
     if geo["lat"] and geo["lon"]:
         geo["map_link"] = f"https://www.google.com/maps/search/?api=1&query={geo['lat']},{geo['lon']}"
 
