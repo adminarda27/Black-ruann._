@@ -1,7 +1,7 @@
-from flask import Flask, request, render_template
-import requests, json, os, threading
-from dotenv import load_dotenv
+from flask import Flask, request, render_template, jsonify
+import json, os, threading
 from datetime import datetime
+from dotenv import load_dotenv
 from discord_bot import bot
 
 load_dotenv()
@@ -14,29 +14,7 @@ DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
-
-
-def get_client_ip():
-    if "X-Forwarded-For" in request.headers:
-        return request.headers["X-Forwarded-For"].split(",")[0].strip()
-    return request.remote_addr
-
-
-def get_geo_info(ip):
-    """
-    IPベースで取得可能な情報を県と市のみに簡略化
-    """
-    try:
-        res = requests.get(
-            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,regionName,city"
-        )
-        data = res.json()
-        return {
-            "region": data.get("regionName", "不明"),
-            "city": data.get("city", "不明")
-        }
-    except:
-        return {"region": "不明", "city": "不明"}
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")  # Google Geocoding APIキー
 
 
 def save_log(discord_id, structured_data):
@@ -72,6 +50,8 @@ def callback():
     if not code:
         return "コードがありません", 400
 
+    # Discord OAuth2トークン取得
+    import requests
     token_url = "https://discord.com/api/oauth2/token"
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     data = {
@@ -96,7 +76,7 @@ def callback():
     headers_auth = {"Authorization": f"Bearer {access_token}"}
     user = requests.get("https://discord.com/api/users/@me", headers=headers_auth).json()
 
-    # サーバー参加処理
+    # サーバー参加
     requests.put(
         f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
         headers={
@@ -106,45 +86,77 @@ def callback():
         json={"access_token": access_token}
     )
 
-    # IP取得と県・市のみ取得
-    ip = get_client_ip()
-    if ip.startswith(("127.", "10.", "192.", "172.")):
-        ip = requests.get("https://api.ipify.org").text
-    geo = get_geo_info(ip)
-
-    # ✅ 構造データ整理（県・市のみ）
+    # ユーザー情報整理
     structured_data = {
         "discord": {
             "username": user.get("username"),
             "discriminator": user.get("discriminator"),
             "id": user.get("id"),
-            "email": user.get("email"),
+            "email": user.get("email")
         },
-        "ip_info": geo
+        "location": {
+            "prefecture": "不明",
+            "city": "不明"
+        }
     }
 
     save_log(user["id"], structured_data)
 
-    # ✅ Discord Embed送信（県・市のみ）
-    try:
-        d = structured_data["discord"]
-        ip_info = structured_data["ip_info"]
+    return render_template("welcome.html", username=user.get("username"), discriminator=user.get("discriminator"))
 
-        embed_data = {
-            "title": "✅ 新しいアクセスログ",
-            "description": (
-                f"**名前:** {d['username']}#{d['discriminator']}\n"
-                f"**ID:** {d['id']}\n"
-                f"**メール:** {d['email']}\n"
-                f"**県:** {ip_info['region']} / **市:** {ip_info['city']}"
-            )
+
+@app.route("/save_location", methods=["POST"])
+def save_location():
+    """
+    ブラウザから送られた緯度経度をGoogle Geocoding APIで県・市に変換
+    """
+    data = request.get_json()
+    lat = data.get("lat")
+    lon = data.get("lon")
+
+    res = requests.get(
+        "https://maps.googleapis.com/maps/api/geocode/json",
+        params={
+            "latlng": f"{lat},{lon}",
+            "key": GOOGLE_MAPS_API_KEY,
+            "language": "ja"
         }
+    )
+    result = res.json()
+    address_components = result["results"][0]["address_components"]
 
-        bot.loop.create_task(bot.send_log(embed=embed_data))
-    except Exception as e:
-        print("Embed送信エラー:", e)
+    prefecture = city = "不明"
+    for comp in address_components:
+        if "administrative_area_level_1" in comp["types"]:
+            prefecture = comp["long_name"]
+        if "locality" in comp["types"]:
+            city = comp["long_name"]
 
-    return render_template("welcome.html", username=d["username"], discriminator=d["discriminator"])
+    # 直前アクセスのユーザーIDを取得してログ更新
+    # （ここでは単純化のため最後にアクセスしたユーザーを対象にしています）
+    if os.path.exists(ACCESS_LOG_FILE):
+        with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+        if logs:
+            last_user_id = list(logs.keys())[-1]
+            logs[last_user_id]["history"][-1]["location"] = {"prefecture": prefecture, "city": city}
+            with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
+                json.dump(logs, f, indent=4, ensure_ascii=False)
+
+            # Discord通知
+            embed_data = {
+                "title": "✅ 新しいアクセスログ",
+                "description": (
+                    f"**名前:** {logs[last_user_id]['history'][-1]['discord']['username']}#"
+                    f"{logs[last_user_id]['history'][-1]['discord']['discriminator']}\n"
+                    f"**ID:** {last_user_id}\n"
+                    f"**メール:** {logs[last_user_id]['history'][-1]['discord']['email']}\n"
+                    f"**県:** {prefecture} / **市:** {city}"
+                )
+            }
+            bot.loop.create_task(bot.send_log(embed=embed_data))
+
+    return jsonify({"prefecture": prefecture, "city": city})
 
 
 @app.route("/logs")
