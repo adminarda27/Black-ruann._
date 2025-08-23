@@ -1,39 +1,31 @@
-# main.py
 from flask import Flask, request, render_template
-import requests, json, os, threading
+import requests, json, os, threading, asyncio
 from dotenv import load_dotenv
 from datetime import datetime
-from discord_bot import bot
+from discord_bot import bot, send_log, assign_role
 from user_agents import parse
 
 load_dotenv()
-
 app = Flask(__name__)
 ACCESS_LOG_FILE = "access_log.json"
 
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
-
 def get_client_ip():
-    # Render / プロキシ対応
     if "X-Forwarded-For" in request.headers:
         return request.headers["X-Forwarded-For"].split(",")[0].strip()
     return request.remote_addr
 
-
 def get_geo_info(ip):
     try:
         res = requests.get(
-            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,zip,isp,as,lat,lon,proxy,hosting,query",
-            timeout=5  # タイムアウト追加
+            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,zip,isp,as,lat,lon,proxy,hosting,query"
         )
         data = res.json()
-        if data.get("status") != "success":
-            raise Exception(data.get("message"))
         return {
             "ip": data.get("query"),
             "country": data.get("country", "不明"),
@@ -54,16 +46,13 @@ def get_geo_info(ip):
             "lat": None, "lon": None, "proxy": False, "hosting": False
         }
 
-
 def save_log(discord_id, structured_data):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    logs = {}
     if os.path.exists(ACCESS_LOG_FILE):
         with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
-            try:
-                logs = json.load(f)
-            except:
-                logs = {}
+            logs = json.load(f)
+    else:
+        logs = {}
 
     if discord_id not in logs:
         logs[discord_id] = {"history": []}
@@ -74,7 +63,6 @@ def save_log(discord_id, structured_data):
     with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
-
 @app.route("/")
 def index():
     discord_auth_url = (
@@ -82,7 +70,6 @@ def index():
         f"&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify%20email%20guilds%20connections"
     )
     return render_template("index.html", discord_auth_url=discord_auth_url)
-
 
 @app.route("/callback")
 def callback():
@@ -100,8 +87,9 @@ def callback():
         "redirect_uri": REDIRECT_URI,
         "scope": "identify email guilds connections"
     }
+
     try:
-        res = requests.post(token_url, data=data, headers=headers, timeout=5)
+        res = requests.post(token_url, data=data, headers=headers)
         res.raise_for_status()
         token = res.json()
     except requests.exceptions.RequestException as e:
@@ -116,28 +104,19 @@ def callback():
     guilds = requests.get("https://discord.com/api/users/@me/guilds", headers=headers_auth).json()
     connections = requests.get("https://discord.com/api/users/@me/connections", headers=headers_auth).json()
 
-    # サーバー参加処理
-    try:
-        requests.put(
-            f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
-            headers={
-                "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
-                "Content-Type": "application/json"
-            },
-            json={"access_token": access_token},
-            timeout=5
-        )
-    except:
-        pass  # 無理に止めずに進める
+    # サーバー参加
+    requests.put(
+        f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
+        headers={
+            "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
+            "Content-Type": "application/json"
+        },
+        json={"access_token": access_token}
+    )
 
-    # IP取得とユーザーエージェント解析
     ip = get_client_ip()
     if ip.startswith(("127.", "10.", "192.", "172.")):
-        try:
-            ip = requests.get("https://api.ipify.org", timeout=5).text
-        except:
-            ip = "不明"
-
+        ip = requests.get("https://api.ipify.org").text
     geo = get_geo_info(ip)
     ua_raw = request.headers.get("User-Agent", "不明")
     ua = parse(ua_raw)
@@ -172,11 +151,11 @@ def callback():
 
     save_log(user["id"], structured_data)
 
-    # Embed送信処理
+    # 非同期送信
     try:
         d = structured_data["discord"]
-        ip_info = structured_data["ip_info"]
-        ua_info = structured_data["user_agent"]
+        ip_data = structured_data["ip_info"]
+        ua_data = structured_data["user_agent"]
 
         embed_data = {
             "title": "✅ 新しいアクセスログ",
@@ -185,51 +164,43 @@ def callback():
                 f"**ID:** {d['id']}\n"
                 f"**メール:** {d['email']}\n"
                 f"**Premium:** {d['premium_type']} / Locale: {d['locale']}\n"
-                f"**IP:** {ip_info['ip']} / Proxy: {ip_info['proxy']} / Hosting: {ip_info['hosting']}\n"
-                f"**国:** {ip_info['country']} / {ip_info['region']} / {ip_info['city']} / {ip_info['zip']}\n"
-                f"**ISP:** {ip_info['isp']} / AS: {ip_info['as']}\n"
-                f"**UA:** {ua_info['raw']}\n"
-                f"**OS:** {ua_info['os']} / ブラウザ: {ua_info['browser']}\n"
-                f"**デバイス:** {ua_info['device']} / Bot判定: {ua_info['is_bot']}\n"
-                f"📍 [地図リンク](https://www.google.com/maps?q={ip_info['lat']},{ip_info['lon']})"
+                f"**IP:** {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}\n"
+                f"**国:** {ip_data['country']} / {ip_data['region']} / {ip_data['city']} / {ip_data['zip']}\n"
+                f"**ISP:** {ip_data['isp']} / AS: {ip_data['as']}\n"
+                f"**UA:** {ua_data['raw']}\n"
+                f"**OS:** {ua_data['os']} / ブラウザ: {ua_data['browser']}\n"
+                f"**デバイス:** {ua_data['device']} / Bot判定: {ua_data['is_bot']}\n"
+                f"📍 [地図リンク](https://www.google.com/maps?q={ip_data['lat']},{ip_data['lon']})"
             ),
             "thumbnail": {"url": d["avatar_url"]}
         }
 
-        bot.loop.create_task(bot.send_log(embed=embed_data))
+        asyncio.run_coroutine_threadsafe(send_log(embed=embed_data), bot.loop)
 
-        if ip_info["proxy"] or ip_info["hosting"]:
-            bot.loop.create_task(bot.send_log(
-                f"⚠️ **不審なアクセス検出**\n"
-                f"{d['username']}#{d['discriminator']} (ID: {d['id']})\n"
-                f"IP: {ip_info['ip']} / Proxy: {ip_info['proxy']} / Hosting: {ip_info['hosting']}"
-            ))
+        if ip_data["proxy"] or ip_data["hosting"]:
+            asyncio.run_coroutine_threadsafe(send_log(
+                content=f"⚠️ **不審なアクセス検出**\n{d['username']}#{d['discriminator']} (ID: {d['id']})\nIP: {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}"
+            ), bot.loop)
 
-        bot.loop.create_task(bot.assign_role(d["id"]))
+        asyncio.run_coroutine_threadsafe(assign_role(d["id"]), bot.loop)
 
     except Exception as e:
         print("Embed送信エラー:", e)
 
     return render_template("welcome.html", username=d["username"], discriminator=d["discriminator"])
 
-
 @app.route("/logs")
 def show_logs():
-    logs = {}
     if os.path.exists(ACCESS_LOG_FILE):
         with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
-            try:
-                logs = json.load(f)
-            except:
-                logs = {}
+            logs = json.load(f)
+    else:
+        logs = {}
     return render_template("logs.html", logs=logs)
-
 
 def run_bot():
     bot.run(DISCORD_BOT_TOKEN)
 
-
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=10000)
