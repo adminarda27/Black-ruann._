@@ -2,10 +2,9 @@
 from flask import Flask, request, jsonify
 import requests, json, os, threading
 from dotenv import load_dotenv
-from datetime import datetime
 from discord_bot import bot
 from user_agents import parse
-from collections import Counter
+from datetime import datetime
 
 load_dotenv()
 
@@ -15,77 +14,35 @@ ACCESS_LOG_FILE = "access_log.json"
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
-
+# --- IP取得 ---
 def get_client_ip():
     if "X-Forwarded-For" in request.headers:
         return request.headers["X-Forwarded-For"].split(",")[0].strip()
     return request.remote_addr
 
-
-def get_geo_info(ip: str):
-    """IPベースで可能な限り県・市まで取得"""
-    results = []
-
-    # ip-api
+# --- ジオ情報取得 ---
+def get_geo_info(ip):
     try:
-        res = requests.get(f"http://ip-api.com/json/{ip}?lang=ja&fields=status,country,regionName,city,isp", timeout=2)
+        res = requests.get(
+            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,query,isp,proxy,hosting"
+        )
         data = res.json()
-        if data.get("status") == "success":
-            results.append({
-                "country": data.get("country"),
-                "region": data.get("regionName"),
-                "city": data.get("city"),
-                "isp": data.get("isp"),
-            })
+        return {
+            "ip": data.get("query", ip),
+            "country": data.get("country", "不明"),
+            "region": data.get("regionName", "不明"),
+            "city": data.get("city", "不明"),
+            "isp": data.get("isp", "不明"),
+            "proxy": data.get("proxy", False),
+            "hosting": data.get("hosting", False)
+        }
     except:
-        pass
+        return {"ip": ip, "country": "不明", "region": "不明", "city": "不明", "isp": "不明", "proxy": False, "hosting": False}
 
-    # ipinfo.io
-    try:
-        res = requests.get(f"https://ipinfo.io/{ip}/json", timeout=2)
-        data = res.json()
-        if "country" in data:
-            results.append({
-                "country": data.get("country"),
-                "region": data.get("region", None),
-                "city": data.get("city", None),
-                "isp": data.get("org", None),
-            })
-    except:
-        pass
-
-    # ipwhois.app
-    try:
-        res = requests.get(f"https://ipwhois.app/json/{ip}?lang=ja", timeout=2)
-        data = res.json()
-        if data.get("success", True):
-            results.append({
-                "country": data.get("country"),
-                "region": data.get("region"),
-                "city": data.get("city"),
-                "isp": data.get("isp"),
-            })
-    except:
-        pass
-
-    if not results:
-        return {"ip": ip, "country": "不明", "region": "不明", "city": "不明", "isp": "不明"}
-
-    # 統合処理（最も多い値を採用）
-    countries = [r["country"] for r in results if r.get("country")]
-    country = Counter(countries).most_common(1)[0][0] if countries else "不明"
-
-    regions = [r["region"] for r in results if r.get("region")]
-    region = Counter(regions).most_common(1)[0][0] if regions else "不明"
-
-    city = next((r["city"] for r in results if r.get("city")), "不明")
-    isp = next((r["isp"] for r in results if r.get("isp")), "不明")
-
-    return {"ip": ip, "country": country, "region": region, "city": city, "isp": isp}
-
-
+# --- ログ保存 ---
 def save_log(discord_id, data):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if os.path.exists(ACCESS_LOG_FILE):
@@ -100,27 +57,25 @@ def save_log(discord_id, data):
     with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
-
+# --- ルート ---
 @app.route("/")
 def index():
-    # テスト用ルート（ブラウザで確認可能）
-    return {"status": "running", "info": "Discord OAuth2 /callback にアクセスしてください"}
+    return jsonify({"message": "Flask Discord OAuth2 Server Running"})
 
-
+# --- OAuth2 Callback ---
 @app.route("/callback")
 def callback():
     code = request.args.get("code")
     if not code:
         return "コードがありません", 400
 
-    # Discordトークン取得
     data = {
         "client_id": DISCORD_CLIENT_ID,
         "client_secret": DISCORD_CLIENT_SECRET,
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": REDIRECT_URI,
-        "scope": "identify email"
+        "scope": "identify"
     }
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     token_response = requests.post("https://discord.com/api/oauth2/token", data=data, headers=headers)
@@ -129,9 +84,12 @@ def callback():
     if not access_token:
         return "アクセストークン取得失敗", 400
 
-    user_info = requests.get("https://discord.com/api/users/@me", headers={"Authorization": f"Bearer {access_token}"}).json()
+    user_info = requests.get(
+        "https://discord.com/api/users/@me",
+        headers={"Authorization": f"Bearer {access_token}"}
+    ).json()
 
-    # IP とジオロケーション
+    # IP とジオ情報
     ip = get_client_ip()
     if ip.startswith(("127.", "10.", "192.", "172.")):
         ip = requests.get("https://api.ipify.org").text
@@ -143,12 +101,13 @@ def callback():
     user_data = {
         "username": f"{user_info['username']}#{user_info['discriminator']}",
         "id": user_info["id"],
-        "email": user_info.get("email"),
         "ip": ip,
         "country": geo["country"],
         "region": geo["region"],
         "city": geo["city"],
         "isp": geo["isp"],
+        "proxy": geo["proxy"],
+        "hosting": geo["hosting"],
         "user_agent": ua_raw,
         "os": ua.os.family,
         "browser": ua.browser.family,
@@ -157,26 +116,41 @@ def callback():
 
     save_log(user_info["id"], user_data)
 
-    # Discord Bot 送信
+    # Discord Bot へログ送信
     bot.loop.create_task(bot.send_log(
         f"✅ 新しいアクセスログ:\n"
         f"```名前: {user_data['username']}\n"
         f"ID: {user_data['id']}\n"
-        f"メール: {user_data.get('email')}\n"
         f"IP: {user_data['ip']}\n"
-        f"国: {user_data['country']} / {user_data['region']} / {user_data['city']}\n"
-        f"ISP: {user_data['isp']}\n"
-        f"OS: {user_data['os']} / ブラウザ: {user_data['browser']}\n"
-        f"デバイス: {user_data['device']}```"
+        f"国: {user_data['country']}\n"
+        f"県: {user_data['region']}\n"
+        f"市区町村: {user_data['city']}\n"
+        f"通信会社: {user_data['isp']}\n"
+        f"Proxy: {user_data['proxy']}\n"
+        f"Hosting: {user_data['hosting']}\n"
+        f"OS: {user_data['os']}\n"
+        f"ブラウザ: {user_data['browser']}\n"
+        f"デバイス: {user_data['device']}\n"
+        f"UA: {user_data['user_agent']}```"
     ))
 
-    return jsonify(user_data)
+    return jsonify({"message": "アクセス成功", "user": user_data})
 
+# --- ログ確認 ---
+@app.route("/logs")
+def show_logs():
+    if os.path.exists(ACCESS_LOG_FILE):
+        with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+    else:
+        logs = {}
+    return jsonify(logs)
 
+# --- Bot 起動 ---
 def run_bot():
     bot.run(DISCORD_BOT_TOKEN)
 
-
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=True, host="0.0.0.0", port=port)
