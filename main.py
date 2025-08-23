@@ -1,4 +1,4 @@
-# app.py
+# main.py
 from flask import Flask, request, jsonify
 import requests, json, os, threading
 from dotenv import load_dotenv
@@ -19,14 +19,13 @@ REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
 
 def get_client_ip():
-    """アクセス者のIPを取得"""
     if "X-Forwarded-For" in request.headers:
         return request.headers["X-Forwarded-For"].split(",")[0].strip()
     return request.remote_addr
 
 
 def get_geo_info(ip: str):
-    """IPベースで可能な限り正確に県・市まで取得"""
+    """IPベースで可能な限り県・市まで取得"""
     results = []
 
     # ip-api
@@ -74,7 +73,7 @@ def get_geo_info(ip: str):
     if not results:
         return {"ip": ip, "country": "不明", "region": "不明", "city": "不明", "isp": "不明"}
 
-    # 統合処理
+    # 統合処理（最も多い値を採用）
     countries = [r["country"] for r in results if r.get("country")]
     country = Counter(countries).most_common(1)[0][0] if countries else "不明"
 
@@ -88,7 +87,6 @@ def get_geo_info(ip: str):
 
 
 def save_log(discord_id, data):
-    """JSONにアクセスログを保存"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if os.path.exists(ACCESS_LOG_FILE):
         with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
@@ -105,12 +103,11 @@ def save_log(discord_id, data):
 
 @app.route("/callback")
 def callback():
-    """Discord OAuth2 callback"""
     code = request.args.get("code")
     if not code:
         return "コードがありません", 400
 
-    # トークン取得
+    # Discordトークン取得
     data = {
         "client_id": DISCORD_CLIENT_ID,
         "client_secret": DISCORD_CLIENT_SECRET,
@@ -128,7 +125,7 @@ def callback():
 
     user_info = requests.get("https://discord.com/api/users/@me", headers={"Authorization": f"Bearer {access_token}"}).json()
 
-    # IPとジオ情報
+    # IP とジオロケーション
     ip = get_client_ip()
     if ip.startswith(("127.", "10.", "192.", "172.")):
         ip = requests.get("https://api.ipify.org").text
