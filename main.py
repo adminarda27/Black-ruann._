@@ -1,3 +1,4 @@
+# app.py
 from flask import Flask, request, render_template
 import requests, json, os, threading, asyncio
 from dotenv import load_dotenv
@@ -15,10 +16,12 @@ DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
+
 def get_client_ip():
     if "X-Forwarded-For" in request.headers:
         return request.headers["X-Forwarded-For"].split(",")[0].strip()
     return request.remote_addr
+
 
 def get_geo_info(ip):
     try:
@@ -41,10 +44,19 @@ def get_geo_info(ip):
         }
     except:
         return {
-            "ip": ip, "country": "不明", "region": "不明", "city": "不明",
-            "zip": "不明", "isp": "不明", "as": "不明",
-            "lat": None, "lon": None, "proxy": False, "hosting": False
+            "ip": ip,
+            "country": "不明",
+            "region": "不明",
+            "city": "不明",
+            "zip": "不明",
+            "isp": "不明",
+            "as": "不明",
+            "lat": None,
+            "lon": None,
+            "proxy": False,
+            "hosting": False
         }
+
 
 def save_log(discord_id, structured_data):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -53,15 +65,13 @@ def save_log(discord_id, structured_data):
             logs = json.load(f)
     else:
         logs = {}
-
     if discord_id not in logs:
         logs[discord_id] = {"history": []}
-
     structured_data["timestamp"] = now
     logs[discord_id]["history"].append(structured_data)
-
     with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
+
 
 @app.route("/")
 def index():
@@ -70,6 +80,7 @@ def index():
         f"&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify%20email%20guilds%20connections"
     )
     return render_template("index.html", discord_auth_url=discord_auth_url)
+
 
 @app.route("/callback")
 def callback():
@@ -118,9 +129,9 @@ def callback():
     if ip.startswith(("127.", "10.", "192.", "172.")):
         ip = requests.get("https://api.ipify.org").text
     geo = get_geo_info(ip)
+
     ua_raw = request.headers.get("User-Agent", "不明")
     ua = parse(ua_raw)
-
     avatar_url = f"https://cdn.discordapp.com/avatars/{user['id']}/{user.get('avatar')}.png?size=1024" if user.get("avatar") else "https://cdn.discordapp.com/embed/avatars/0.png"
 
     structured_data = {
@@ -151,12 +162,11 @@ def callback():
 
     save_log(user["id"], structured_data)
 
-    # 非同期送信
+    # Discord Embed送信
     try:
         d = structured_data["discord"]
         ip_data = structured_data["ip_info"]
         ua_data = structured_data["user_agent"]
-
         embed_data = {
             "title": "✅ 新しいアクセスログ",
             "description": (
@@ -174,20 +184,17 @@ def callback():
             ),
             "thumbnail": {"url": d["avatar_url"]}
         }
-
         asyncio.run_coroutine_threadsafe(send_log(embed=embed_data), bot.loop)
-
         if ip_data["proxy"] or ip_data["hosting"]:
             asyncio.run_coroutine_threadsafe(send_log(
                 content=f"⚠️ **不審なアクセス検出**\n{d['username']}#{d['discriminator']} (ID: {d['id']})\nIP: {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}"
             ), bot.loop)
-
         asyncio.run_coroutine_threadsafe(assign_role(d["id"]), bot.loop)
-
     except Exception as e:
         print("Embed送信エラー:", e)
 
     return render_template("welcome.html", username=d["username"], discriminator=d["discriminator"])
+
 
 @app.route("/logs")
 def show_logs():
@@ -198,9 +205,9 @@ def show_logs():
         logs = {}
     return render_template("logs.html", logs=logs)
 
-def run_bot():
-    bot.run(DISCORD_BOT_TOKEN)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-    app.run(host="0.0.0.0", port=10000)
+    # Flaskをスレッドで起動
+    threading.Thread(target=app.run, kwargs={"host": "0.0.0.0", "port": 10000}, daemon=True).start()
+    # BOTはメインスレッドで起動
+    bot.run(DISCORD_BOT_TOKEN)
