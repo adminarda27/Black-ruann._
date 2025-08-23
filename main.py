@@ -101,6 +101,12 @@ def save_log(discord_id, data):
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
 
+@app.route("/")
+def index():
+    # テスト用ルート（ブラウザで確認可能）
+    return {"status": "running", "info": "Discord OAuth2 /callback にアクセスしてください"}
+
+
 @app.route("/callback")
 def callback():
     code = request.args.get("code")
