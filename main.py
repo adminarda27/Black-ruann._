@@ -3,7 +3,7 @@ from flask import Flask, request, render_template
 import requests, json, os, threading, asyncio
 from dotenv import load_dotenv
 from datetime import datetime
-from discord_bot import bot, assign_role, log_queue
+from discord_bot import bot, assign_role, task_queue
 from user_agents import parse
 
 load_dotenv()
