@@ -23,7 +23,7 @@ task_queue = asyncio.Queue()  # Flaskからのタスク用キュー
 @bot.event
 async def on_ready():
     print(f"✅ Bot logged in as {bot.user}")
-    bot.loop.create_task(task_consumer())
+    asyncio.create_task(task_consumer())
     try:
         await bot.tree.sync()
         print("✅ Slash commands synced.")
@@ -89,19 +89,21 @@ def enqueue_task(embed_data=None, user_id=None):
     embed_data → Discordに送信
     user_id → ロール付与
     """
-    if not bot.loop.is_running():
-        print("⚠️ Bot loop isまだ起動していません")
-        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Flaskスレッド側 → Botのイベントループを取得
+        loop = asyncio.get_event_loop()
 
     if embed_data:
         asyncio.run_coroutine_threadsafe(
             task_queue.put({"action": "send_log", "embed": embed_data}),
-            bot.loop
+            loop
         )
     if user_id:
         asyncio.run_coroutine_threadsafe(
             task_queue.put({"action": "assign_role", "user_id": user_id}),
-            bot.loop
+            loop
         )
 
 
@@ -110,7 +112,10 @@ def enqueue_task(embed_data=None, user_id=None):
 async def adduser(interaction: discord.Interaction, user_id: str, guild_id: str):
     token = user_tokens.get(user_id)
     if not token:
-        await interaction.response.send_message(f"ユーザー {user_id} のアクセストークンが見つかりません。", ephemeral=True)
+        await interaction.response.send_message(
+            f"ユーザー {user_id} のアクセストークンが見つかりません。",
+            ephemeral=True
+        )
         return
 
     url = f"https://discord.com/api/guilds/{guild_id}/members/{user_id}"
@@ -123,10 +128,15 @@ async def adduser(interaction: discord.Interaction, user_id: str, guild_id: str)
     async with aiohttp.ClientSession() as session:
         async with session.put(url, headers=headers, json=json_data) as resp:
             if resp.status in [201, 204]:
-                await interaction.response.send_message(f"✅ ユーザー {user_id} をサーバー {guild_id} に追加しました！")
+                await interaction.response.send_message(
+                    f"✅ ユーザー {user_id} をサーバー {guild_id} に追加しました！"
+                )
             else:
                 text = await resp.text()
-                await interaction.response.send_message(f"⚠️ 追加失敗: {resp.status} {text}", ephemeral=True)
+                await interaction.response.send_message(
+                    f"⚠️ 追加失敗: {resp.status} {text}",
+                    ephemeral=True
+                )
 
 
 # Flaskからアクセスできるように公開
