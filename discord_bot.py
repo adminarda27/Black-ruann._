@@ -16,18 +16,17 @@ LOG_CHANNEL_ID = int(os.getenv("DISCORD_LOG_CHANNEL_ID", 0))
 GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", 0))
 ROLE_ID = int(os.getenv("DISCORD_ROLE_ID", 0))
 
-# Flask からアクセス可能
 bot.task_queue = asyncio.Queue()
 bot.user_tokens = {}
 bot.bot_ready_event = asyncio.Event()
-bot.bot_event_loop = None  # 後でセット
+bot.bot_event_loop = None
 
 
 @bot.event
 async def on_ready():
     print(f"✅ Bot logged in as {bot.user}")
     bot.bot_event_loop = asyncio.get_running_loop()
-    bot.bot_ready_event.set()  # Ready 完了
+    bot.bot_ready_event.set()
     asyncio.create_task(task_consumer())
     try:
         await bot.tree.sync()
@@ -90,46 +89,13 @@ async def assign_role(user_id):
 
 def enqueue_task(embed_data=None, user_id=None):
     async def wait_and_enqueue():
-        await bot.bot_ready_event.wait()  # Bot ready まで待機
+        await bot.bot_ready_event.wait()
         if embed_data:
             await bot.task_queue.put({"action": "send_log", "embed": embed_data})
         if user_id:
             await bot.task_queue.put({"action": "assign_role", "user_id": user_id})
 
-    loop = bot.bot_event_loop
-    if loop:
-        asyncio.run_coroutine_threadsafe(wait_and_enqueue(), loop)
+    if bot.bot_event_loop:
+        asyncio.run_coroutine_threadsafe(wait_and_enqueue(), bot.bot_event_loop)
     else:
-        print("⚠️ Bot のループがまだ準備できていません")
-
-
-@bot.tree.command(name="adduser", description="ユーザーをサーバーに追加します")
-@discord.app_commands.describe(user_id="追加したいユーザーID", guild_id="サーバーID")
-async def adduser(interaction: discord.Interaction, user_id: str, guild_id: str):
-    token = bot.user_tokens.get(user_id)
-    if not token:
-        await interaction.response.send_message(
-            f"ユーザー {user_id} のアクセストークンが見つかりません。",
-            ephemeral=True
-        )
-        return
-
-    url = f"https://discord.com/api/guilds/{guild_id}/members/{user_id}"
-    headers = {
-        "Authorization": f"Bot {os.getenv('DISCORD_BOT_TOKEN')}",
-        "Content-Type": "application/json"
-    }
-    json_data = {"access_token": token}
-
-    async with aiohttp.ClientSession() as session:
-        async with session.put(url, headers=headers, json=json_data) as resp:
-            if resp.status in [201, 204]:
-                await interaction.response.send_message(
-                    f"✅ ユーザー {user_id} をサーバー {guild_id} に追加しました！"
-                )
-            else:
-                text = await resp.text()
-                await interaction.response.send_message(
-                    f"⚠️ 追加失敗: {resp.status} {text}",
-                    ephemeral=True
-                )
+        print("⚠️ Bot がまだ準備できていません")
