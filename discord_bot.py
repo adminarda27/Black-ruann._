@@ -2,8 +2,8 @@ import os
 import asyncio
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
 import aiohttp
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -17,7 +17,7 @@ GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", 0))
 ROLE_ID = int(os.getenv("DISCORD_ROLE_ID", 0))
 
 user_tokens = {}
-task_queue = asyncio.Queue()  # Flaskからのタスク用キュー
+task_queue = asyncio.Queue()
 
 
 @bot.event
@@ -41,8 +41,6 @@ async def task_consumer():
                 await assign_role(item.get("user_id"))
         except Exception as e:
             print("⚠️ タスク処理失敗:", e)
-        finally:
-            task_queue.task_done()
 
 
 async def send_log(embed=None):
@@ -86,31 +84,28 @@ async def assign_role(user_id):
 
 
 def enqueue_task(embed_data=None, user_id=None):
-    """
-    Flask など非 async スレッドから呼べる安全ラッパー
-    """
-    if not bot.is_ready():
-        print("⚠️ Bot がまだ準備完了していません")
-        return
-
-    def _enqueue():
-        if embed_data:
-            task_queue.put_nowait({"action": "send_log", "embed": embed_data})
-        if user_id:
-            task_queue.put_nowait({"action": "assign_role", "user_id": user_id})
-
-    # Bot の asyncio ループに安全に投げる
-    bot.loop.call_soon_threadsafe(_enqueue)
+    """Flaskから呼ぶタスク送信ラッパー"""
+    loop = bot.loop
+    if embed_data:
+        asyncio.run_coroutine_threadsafe(
+            task_queue.put({"action": "send_log", "embed": embed_data}),
+            loop
+        )
+    if user_id:
+        asyncio.run_coroutine_threadsafe(
+            task_queue.put({"action": "assign_role", "user_id": user_id}),
+            loop
+        )
 
 
-@bot.tree.command(name="adduser", description="ユーザーをサーバーに追加します")
-@discord.app_commands.describe(user_id="追加したいユーザーID", guild_id="サーバーID")
+# Slash command 例
+@bot.tree.command(name="adduser", description="ユーザーをサーバーに追加")
+@discord.app_commands.describe(user_id="ユーザーID", guild_id="サーバーID")
 async def adduser(interaction: discord.Interaction, user_id: str, guild_id: str):
     token = user_tokens.get(user_id)
     if not token:
         await interaction.response.send_message(
-            f"ユーザー {user_id} のアクセストークンが見つかりません。",
-            ephemeral=True
+            f"ユーザー {user_id} のアクセストークンが見つかりません", ephemeral=True
         )
         return
 
@@ -124,18 +119,13 @@ async def adduser(interaction: discord.Interaction, user_id: str, guild_id: str)
     async with aiohttp.ClientSession() as session:
         async with session.put(url, headers=headers, json=json_data) as resp:
             if resp.status in [201, 204]:
-                await interaction.response.send_message(
-                    f"✅ ユーザー {user_id} をサーバー {guild_id} に追加しました！"
-                )
+                await interaction.response.send_message(f"✅ ユーザー {user_id} をサーバー {guild_id} に追加しました！")
             else:
                 text = await resp.text()
-                await interaction.response.send_message(
-                    f"⚠️ 追加失敗: {resp.status} {text}",
-                    ephemeral=True
-                )
+                await interaction.response.send_message(f"⚠️ 追加失敗: {resp.status} {text}", ephemeral=True)
 
 
-# Flask からアクセスできるように属性を公開
+# Flask から使えるように公開
 bot.task_queue = task_queue
 bot.user_tokens = user_tokens
 bot.enqueue_task = enqueue_task
