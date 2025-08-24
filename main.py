@@ -1,9 +1,8 @@
-# app.py
 from flask import Flask, request, render_template
 import requests, json, os, threading, asyncio
 from dotenv import load_dotenv
 from datetime import datetime
-from discord_bot import bot, send_log, assign_role
+from discord_bot import bot, log_queue, assign_role
 from user_agents import parse
 
 load_dotenv()
@@ -40,7 +39,7 @@ def get_geo_info(ip):
             "lat": data.get("lat"),
             "lon": data.get("lon"),
             "proxy": data.get("proxy", False),
-            "hosting": data.get("hosting", False)
+            "hosting": data.get("hosting", False),
         }
     except:
         return {
@@ -54,7 +53,7 @@ def get_geo_info(ip):
             "lat": None,
             "lon": None,
             "proxy": False,
-            "hosting": False
+            "hosting": False,
         }
 
 
@@ -65,10 +64,13 @@ def save_log(discord_id, structured_data):
             logs = json.load(f)
     else:
         logs = {}
+
     if discord_id not in logs:
         logs[discord_id] = {"history": []}
+
     structured_data["timestamp"] = now
     logs[discord_id]["history"].append(structured_data)
+
     with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
@@ -96,7 +98,7 @@ def callback():
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": REDIRECT_URI,
-        "scope": "identify email guilds connections"
+        "scope": "identify email guilds connections",
     }
 
     try:
@@ -120,9 +122,9 @@ def callback():
         f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
         headers={
             "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         },
-        json={"access_token": access_token}
+        json={"access_token": access_token},
     )
 
     ip = get_client_ip()
@@ -132,7 +134,12 @@ def callback():
 
     ua_raw = request.headers.get("User-Agent", "不明")
     ua = parse(ua_raw)
-    avatar_url = f"https://cdn.discordapp.com/avatars/{user['id']}/{user.get('avatar')}.png?size=1024" if user.get("avatar") else "https://cdn.discordapp.com/embed/avatars/0.png"
+
+    avatar_url = (
+        f"https://cdn.discordapp.com/avatars/{user['id']}/{user.get('avatar')}.png?size=1024"
+        if user.get("avatar")
+        else "https://cdn.discordapp.com/embed/avatars/0.png"
+    )
 
     structured_data = {
         "discord": {
@@ -148,7 +155,7 @@ def callback():
             "flags": user.get("flags"),
             "public_flags": user.get("public_flags"),
             "guilds": guilds,
-            "connections": connections
+            "connections": connections,
         },
         "ip_info": geo,
         "user_agent": {
@@ -156,17 +163,18 @@ def callback():
             "os": ua.os.family,
             "browser": ua.browser.family,
             "device": "Mobile" if ua.is_mobile else "Tablet" if ua.is_tablet else "PC" if ua.is_pc else "Other",
-            "is_bot": ua.is_bot
-        }
+            "is_bot": ua.is_bot,
+        },
     }
 
     save_log(user["id"], structured_data)
 
-    # Discord Embed送信
+    # Discord送信をキューに投げる
     try:
         d = structured_data["discord"]
         ip_data = structured_data["ip_info"]
         ua_data = structured_data["user_agent"]
+
         embed_data = {
             "title": "✅ 新しいアクセスログ",
             "description": (
@@ -182,14 +190,24 @@ def callback():
                 f"**デバイス:** {ua_data['device']} / Bot判定: {ua_data['is_bot']}\n"
                 f"📍 [地図リンク](https://www.google.com/maps?q={ip_data['lat']},{ip_data['lon']})"
             ),
-            "thumbnail": {"url": d["avatar_url"]}
+            "thumbnail": {"url": d["avatar_url"]},
         }
-        asyncio.run_coroutine_threadsafe(send_log(embed=embed_data), bot.loop)
+
+        # キューに追加
+        asyncio.run_coroutine_threadsafe(log_queue.put(embed_data), asyncio.get_event_loop())
+
         if ip_data["proxy"] or ip_data["hosting"]:
-            asyncio.run_coroutine_threadsafe(send_log(
-                content=f"⚠️ **不審なアクセス検出**\n{d['username']}#{d['discriminator']} (ID: {d['id']})\nIP: {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}"
-            ), bot.loop)
-        asyncio.run_coroutine_threadsafe(assign_role(d["id"]), bot.loop)
+            warn_msg = {
+                "title": "⚠️ 不審なアクセス検出",
+                "description": (
+                    f"{d['username']}#{d['discriminator']} (ID: {d['id']})\n"
+                    f"IP: {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}"
+                ),
+            }
+            asyncio.run_coroutine_threadsafe(log_queue.put(warn_msg), asyncio.get_event_loop())
+
+        asyncio.run_coroutine_threadsafe(assign_role(d["id"]), asyncio.get_event_loop())
+
     except Exception as e:
         print("Embed送信エラー:", e)
 
@@ -206,8 +224,11 @@ def show_logs():
     return render_template("logs.html", logs=logs)
 
 
-if __name__ == "__main__":
-    # Flaskをスレッドで起動
-    threading.Thread(target=app.run, kwargs={"host": "0.0.0.0", "port": 10000}, daemon=True).start()
-    # BOTはメインスレッドで起動
+def run_bot():
     bot.run(DISCORD_BOT_TOKEN)
+
+
+if __name__ == "__main__":
+    threading.Thread(target=run_bot, daemon=True).start()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
