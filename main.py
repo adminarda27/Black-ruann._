@@ -194,7 +194,8 @@ def callback():
             "thumbnail": {"url": d["avatar_url"]},
         }
 
-        asyncio.run_coroutine_threadsafe(log_queue.put(embed_data), asyncio.get_event_loop())
+        # ✅ 修正: log_queue → task_queue
+        asyncio.run_coroutine_threadsafe(task_queue.put(embed_data), bot.loop)
 
         if ip_data["proxy"] or ip_data["hosting"]:
             warn_msg = {
@@ -204,9 +205,9 @@ def callback():
                     f"IP: {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}"
                 ),
             }
-            asyncio.run_coroutine_threadsafe(log_queue.put(warn_msg), asyncio.get_event_loop())
+            asyncio.run_coroutine_threadsafe(task_queue.put(warn_msg), bot.loop)
 
-        asyncio.run_coroutine_threadsafe(assign_role(d["id"]), asyncio.get_event_loop())
+        asyncio.run_coroutine_threadsafe(assign_role(d["id"]), bot.loop)
 
     except Exception as e:
         print("Embed送信エラー:", e)
