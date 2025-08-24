@@ -41,6 +41,8 @@ async def task_consumer():
                 await assign_role(item.get("user_id"))
         except Exception as e:
             print("⚠️ タスク処理失敗:", e)
+        finally:
+            task_queue.task_done()
 
 
 async def send_log(embed=None):
@@ -85,26 +87,20 @@ async def assign_role(user_id):
 
 def enqueue_task(embed_data=None, user_id=None):
     """
-    Flaskから呼び出す安全なラッパー。
-    embed_data → Discordに送信
-    user_id → ロール付与
+    Flask など非 async スレッドから呼べる安全ラッパー
     """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        # Flaskスレッド側 → Botのイベントループを取得
-        loop = asyncio.get_event_loop()
+    if not bot.is_ready():
+        print("⚠️ Bot がまだ準備完了していません")
+        return
 
-    if embed_data:
-        asyncio.run_coroutine_threadsafe(
-            task_queue.put({"action": "send_log", "embed": embed_data}),
-            loop
-        )
-    if user_id:
-        asyncio.run_coroutine_threadsafe(
-            task_queue.put({"action": "assign_role", "user_id": user_id}),
-            loop
-        )
+    def _enqueue():
+        if embed_data:
+            task_queue.put_nowait({"action": "send_log", "embed": embed_data})
+        if user_id:
+            task_queue.put_nowait({"action": "assign_role", "user_id": user_id})
+
+    # Bot の asyncio ループに安全に投げる
+    bot.loop.call_soon_threadsafe(_enqueue)
 
 
 @bot.tree.command(name="adduser", description="ユーザーをサーバーに追加します")
@@ -139,7 +135,7 @@ async def adduser(interaction: discord.Interaction, user_id: str, guild_id: str)
                 )
 
 
-# Flaskからアクセスできるように公開
+# Flask からアクセスできるように属性を公開
 bot.task_queue = task_queue
 bot.user_tokens = user_tokens
 bot.enqueue_task = enqueue_task
