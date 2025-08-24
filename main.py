@@ -4,9 +4,9 @@ import threading
 import requests
 from datetime import datetime
 from flask import Flask, request, render_template
-from discord_bot import bot, enqueue_task
 from user_agents import parse
 from dotenv import load_dotenv
+from discord_bot import bot, enqueue_task
 
 load_dotenv()
 app = Flask(__name__)
@@ -121,22 +121,14 @@ def callback():
 
     save_log(user.get("id"), log_data)
 
-    # Botにタスク送信
-    bot.enqueue_task(embed_data={"title": "新規アクセス", "description": f"{log_data}"}, user_id=user.get("id"))
+    # Bot にタスク送信（安全に enqueue）
+    enqueue_task(embed_data={"title": "新規アクセス", "description": f"{log_data}"}, user_id=user.get("id"))
 
     return render_template("welcome.html", username=log_data["username"])
 
 
-# =====================
-# Flask 起動前に Bot スレッドを立ち上げる
-# =====================
 def start_bot_thread():
-    def run_bot():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        bot.run(os.getenv("DISCORD_BOT_TOKEN"))
-
-    threading.Thread(target=run_bot, daemon=True).start()
+    threading.Thread(target=lambda: bot.run(os.getenv("DISCORD_BOT_TOKEN")), daemon=True).start()
 
 
 if __name__ == "__main__":
