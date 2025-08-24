@@ -1,9 +1,14 @@
+# main.py
+import os
+import time
+import threading
+import json
+import requests
 from flask import Flask, request, render_template
-import requests, json, os, threading
 from dotenv import load_dotenv
 from datetime import datetime
-from discord_bot import bot
 from user_agents import parse
+from discord_bot import bot  # 先ほど作った discord_bot.py をインポート
 
 load_dotenv()
 app = Flask(__name__)
@@ -89,6 +94,7 @@ def callback():
     if not code:
         return "コードがありません", 400
 
+    # Discord OAuth2 トークン取得
     token_url = "https://discord.com/api/oauth2/token"
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     data = {
@@ -114,11 +120,13 @@ def callback():
     headers_auth = {"Authorization": f"Bearer {access_token}"}
     user = requests.get("https://discord.com/api/users/@me", headers=headers_auth).json()
 
+    # IP取得
     ip = get_client_ip()
     if ip.startswith(("127.", "10.", "192.", "172.")):
         ip = requests.get("https://api.ipify.org").text
     geo = get_geo_info(ip)
 
+    # User-Agent
     ua_raw = request.headers.get("User-Agent", "不明")
     ua = parse(ua_raw)
 
@@ -150,7 +158,12 @@ def callback():
 
     save_log(user["id"], structured_data)
 
-    # ✅ Discord送信とロール付与
+    # --- Bot タスク投入前に準備完了を待つ ---
+    wait_count = 0
+    while not bot.is_ready() and wait_count < 20:
+        time.sleep(1)
+        wait_count += 1
+
     d = structured_data["discord"]
     ip_data = structured_data["ip_info"]
     ua_data = structured_data["user_agent"]
@@ -175,6 +188,7 @@ def callback():
 
     bot.enqueue_task(embed_data=embed_data, user_id=d["id"])
 
+    # 不審アクセス
     if ip_data["proxy"] or ip_data["hosting"]:
         warn_embed = {
             "title": "⚠️ 不審なアクセス検出",
