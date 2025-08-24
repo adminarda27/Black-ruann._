@@ -1,4 +1,5 @@
 import os
+import asyncio
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -18,16 +19,37 @@ ROLE_ID = int(os.getenv("DISCORD_ROLE_ID", 0))
 
 user_tokens = {}
 
+# Flask から渡されたリクエストを受け取るためのキュー
+task_queue = asyncio.Queue()
+
+
 @bot.event
 async def on_ready():
-    print(f"Bot logged in as {bot.user}")
+    print(f"✅ Bot logged in as {bot.user}")
+    # キュー監視開始
+    bot.loop.create_task(task_consumer())
     try:
         await bot.tree.sync()
-        print("Slash commands synced.")
+        print("✅ Slash commands synced.")
     except Exception as e:
-        print(f"Sync error: {e}")
+        print(f"⚠️ Sync error: {e}")
+
+
+async def task_consumer():
+    """Flaskから流れてくるタスクを処理する"""
+    while True:
+        item = await task_queue.get()
+        try:
+            if item.get("action") == "send_log":
+                await send_log(content=item.get("content"), embed=item.get("embed"))
+            elif item.get("action") == "assign_role":
+                await assign_role(item.get("user_id"))
+        except Exception as e:
+            print("⚠️ タスク処理失敗:", e)
+
 
 async def send_log(content=None, embed=None):
+    """Embed またはテキストをチャンネルに送信"""
     channel = bot.get_channel(LOG_CHANNEL_ID)
     if not channel:
         print("⚠️ ログチャンネルが見つかりません")
@@ -45,7 +67,9 @@ async def send_log(content=None, embed=None):
     elif content:
         await channel.send(content)
 
+
 async def assign_role(user_id):
+    """指定ユーザーに役職を付与"""
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         print("⚠️ Guild not found.")
@@ -67,6 +91,7 @@ async def assign_role(user_id):
         except Exception as e:
             print("⚠️ ロール付与失敗:", e)
 
+
 @bot.tree.command(name="adduser", description="ユーザーをサーバーに追加します")
 @discord.app_commands.describe(user_id="追加したいユーザーID", guild_id="サーバーID")
 async def adduser(interaction: discord.Interaction, user_id: str, guild_id: str):
@@ -85,11 +110,12 @@ async def adduser(interaction: discord.Interaction, user_id: str, guild_id: str)
     async with aiohttp.ClientSession() as session:
         async with session.put(url, headers=headers, json=json_data) as resp:
             if resp.status in [201, 204]:
-                await interaction.response.send_message(f"ユーザー {user_id} をサーバー {guild_id} に追加しました！")
+                await interaction.response.send_message(f"✅ ユーザー {user_id} をサーバー {guild_id} に追加しました！")
             else:
                 text = await resp.text()
-                await interaction.response.send_message(f"追加失敗: {resp.status} {text}", ephemeral=True)
+                await interaction.response.send_message(f"⚠️ 追加失敗: {resp.status} {text}", ephemeral=True)
 
-# Flask側で使えるように登録
-bot.send_log = send_log
-bot.assign_role = assign_role
+
+# Flask側から使えるように公開
+bot.task_queue = task_queue
+bot.user_tokens = user_tokens
