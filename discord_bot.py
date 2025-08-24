@@ -2,9 +2,8 @@ import os
 import asyncio
 import discord
 from discord.ext import commands
-from discord import app_commands
-import aiohttp
 from dotenv import load_dotenv
+import aiohttp
 
 load_dotenv()
 
@@ -37,14 +36,14 @@ async def task_consumer():
         item = await task_queue.get()
         try:
             if item.get("action") == "send_log":
-                await send_log(content=item.get("content"), embed=item.get("embed"))
+                await send_log(embed=item.get("embed"))
             elif item.get("action") == "assign_role":
                 await assign_role(item.get("user_id"))
         except Exception as e:
             print("⚠️ タスク処理失敗:", e)
 
 
-async def send_log(content=None, embed=None):
+async def send_log(embed=None):
     channel = bot.get_channel(LOG_CHANNEL_ID)
     if not channel:
         print("⚠️ ログチャンネルが見つかりません")
@@ -59,8 +58,6 @@ async def send_log(content=None, embed=None):
         if "thumbnail" in embed and embed["thumbnail"]:
             embed_obj.set_thumbnail(url=embed["thumbnail"]["url"])
         await channel.send(embed=embed_obj)
-    elif content:
-        await channel.send(content)
 
 
 async def assign_role(user_id):
@@ -84,6 +81,28 @@ async def assign_role(user_id):
             print(f"✅ {member} にロールを付与しました。")
         except Exception as e:
             print("⚠️ ロール付与失敗:", e)
+
+
+def enqueue_task(embed_data=None, user_id=None):
+    """
+    Flaskから呼び出す安全なラッパー。
+    embed_data → Discordに送信
+    user_id → ロール付与
+    """
+    if not bot.loop.is_running():
+        print("⚠️ Bot loop isまだ起動していません")
+        return
+
+    if embed_data:
+        asyncio.run_coroutine_threadsafe(
+            task_queue.put({"action": "send_log", "embed": embed_data}),
+            bot.loop
+        )
+    if user_id:
+        asyncio.run_coroutine_threadsafe(
+            task_queue.put({"action": "assign_role", "user_id": user_id}),
+            bot.loop
+        )
 
 
 @bot.tree.command(name="adduser", description="ユーザーをサーバーに追加します")
@@ -113,3 +132,4 @@ async def adduser(interaction: discord.Interaction, user_id: str, guild_id: str)
 # Flaskからアクセスできるように公開
 bot.task_queue = task_queue
 bot.user_tokens = user_tokens
+bot.enqueue_task = enqueue_task
