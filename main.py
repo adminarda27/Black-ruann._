@@ -29,48 +29,92 @@ def get_client_ip():
         return "0.0.0.0"
 
 
-# --- IPから地域情報（改良版） ---
+# --- IPから地域情報（クロスチェック版） ---
 def get_geo_info(ip):
-    try:
-        # プライベートIPをグローバルIPに置換
-        if ip.startswith(("127.", "192.", "10.", "172.")):
-            ip = requests.get("https://api.ipify.org").text
+    def query_ip_api(ip):
+        try:
+            res = requests.get(
+                f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,lat,lon,proxy,hosting,isp,org,as,query",
+                timeout=5
+            )
+            data = res.json()
+            if data.get("status") != "success":
+                return None
+            return {
+                "ip": data.get("query", ip),
+                "country": data.get("country", "不明"),
+                "region": data.get("regionName", "不明"),
+                "city": data.get("city", "不明"),
+                "lat": data.get("lat"),
+                "lon": data.get("lon"),
+                "proxy": data.get("proxy", False),
+                "hosting": data.get("hosting", False),
+                "isp": data.get("isp", "不明"),
+                "org": data.get("org", "不明"),
+                "as": data.get("as", "不明"),
+            }
+        except:
+            return None
 
-        response = requests.get(
-            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,lat,lon,proxy,hosting,query,isp,org,as"
-        )
-        data = response.json()
+    def query_ipinfo(ip):
+        try:
+            token = os.getenv("IPINFO_TOKEN", "")
+            res = requests.get(f"https://ipinfo.io/{ip}/json?token={token}", timeout=5)
+            data = res.json()
+            loc = data.get("loc", "")
+            lat, lon = (None, None)
+            if loc:
+                lat, lon = map(float, loc.split(","))
+            return {
+                "ip": data.get("ip", ip),
+                "country": data.get("country", "不明"),
+                "region": data.get("region", "不明"),
+                "city": data.get("city", "不明"),
+                "lat": lat,
+                "lon": lon,
+                "proxy": False,
+                "hosting": False,
+                "isp": data.get("org", "不明"),
+                "org": data.get("org", "不明"),
+                "as": data.get("org", "不明"),
+            }
+        except:
+            return None
 
-        if data.get("status") != "success":
-            raise ValueError("Geo取得失敗")
+    # プライベートIPをグローバルIPに置換
+    if ip.startswith(("127.", "192.", "10.", "172.")):
+        try:
+            ip = requests.get("https://api.ipify.org", timeout=5).text
+        except:
+            pass
 
-        geo = {
-            "ip": data.get("query", ip),
-            "country": data.get("country", "不明"),
-            "region": data.get("regionName", "不明"),
-            "city": data.get("city", "不明"),
-            "lat": data.get("lat"),
-            "lon": data.get("lon"),
-            "proxy": data.get("proxy", False),
-            "hosting": data.get("hosting", False),
-            "isp": data.get("isp", "不明"),
-            "org": data.get("org", "不明"),
-            "as": data.get("as", "不明"),
-        }
+    geo1 = query_ip_api(ip)
+    geo2 = query_ipinfo(ip)
 
-        # Google Mapリンク生成
-        if geo["lat"] and geo["lon"]:
-            geo["map_url"] = f"https://www.google.com/maps?q={geo['lat']},{geo['lon']}"
-        elif geo["city"] != "不明":
-            geo["map_url"] = f"https://www.google.com/maps/search/{geo['city']},{geo['region']},{geo['country']}"
+    # クロスチェック
+    if geo1 and geo2:
+        if geo1["region"] == geo2["region"] and geo1["city"] == geo2["city"]:
+            geo = geo1
         else:
-            geo["map_url"] = "不明"
-
-        return geo
-
-    except Exception as e:
-        print("Geo情報取得エラー:", e)
-        return {
+            geo = {
+                "ip": ip,
+                "country": geo1.get("country", "不明"),
+                "region": "不明",
+                "city": "不明",
+                "lat": geo1.get("lat"),
+                "lon": geo1.get("lon"),
+                "proxy": geo1.get("proxy", False),
+                "hosting": geo1.get("hosting", False),
+                "isp": geo1.get("isp", "不明"),
+                "org": geo1.get("org", "不明"),
+                "as": geo1.get("as", "不明"),
+            }
+    elif geo1:
+        geo = geo1
+    elif geo2:
+        geo = geo2
+    else:
+        geo = {
             "ip": ip,
             "country": "不明",
             "region": "不明",
@@ -82,8 +126,17 @@ def get_geo_info(ip):
             "isp": "不明",
             "org": "不明",
             "as": "不明",
-            "map_url": "不明",
         }
+
+    # Google Mapリンク生成
+    if geo["lat"] and geo["lon"]:
+        geo["map_url"] = f"https://www.google.com/maps?q={geo['lat']},{geo['lon']}"
+    elif geo["city"] != "不明":
+        geo["map_url"] = f"https://www.google.com/maps/search/{geo['city']},{geo['region']},{geo['country']}"
+    else:
+        geo["map_url"] = "不明"
+
+    return geo
 
 
 # --- ログ保存 ---
@@ -127,7 +180,7 @@ def callback():
     if not code:
         return "コードがありません", 400
 
-    # --- Discordトークン取得 ---
+    # Discordトークン取得
     try:
         token_resp = requests.post(
             "https://discord.com/api/oauth2/token",
@@ -148,7 +201,7 @@ def callback():
     except Exception as e:
         return f"トークン取得エラー: {e}", 500
 
-    # --- ユーザー情報取得 ---
+    # ユーザー情報取得
     try:
         user_resp = requests.get(
             "https://discord.com/api/users/@me",
@@ -158,7 +211,7 @@ def callback():
     except:
         return "ユーザー情報取得失敗", 500
 
-    # --- サーバー参加 ---
+    # サーバー参加
     try:
         requests.put(
             f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
@@ -171,11 +224,11 @@ def callback():
     except Exception as e:
         print("サーバー参加エラー:", e)
 
-    # --- IP & GEO ---
+    # IP & GEO
     ip = get_client_ip()
     geo = get_geo_info(ip)
 
-    # --- 追加情報 ---
+    # 追加情報
     user_agent = request.headers.get("User-Agent", "不明")
 
     try:
@@ -225,7 +278,7 @@ def callback():
 
     save_log(user["id"], data)
 
-    # --- Discord通知 ---
+    # Discord通知
     try:
         bot.loop.create_task(
             bot.send_log(
