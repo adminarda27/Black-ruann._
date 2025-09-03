@@ -1,104 +1,108 @@
-# --- IPから地域情報（県クロスチェック＋市残す版） ---
+from flask import Flask, request, render_template
+import requests, json, os, threading
+from dotenv import load_dotenv
+from discord_bot import bot
+
+load_dotenv()
+
+app = Flask(__name__)
+ACCESS_LOG_FILE = "access_log.json"
+DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
+DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
+REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
+
+def get_client_ip():
+    if "X-Forwarded-For" in request.headers:
+        return request.headers["X-Forwarded-For"].split(",")[0].strip()
+    return request.remote_addr
+
 def get_geo_info(ip):
-    def query_ip_api(ip):
-        try:
-            res = requests.get(
-                f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,lat,lon,proxy,hosting,isp,org,as,query",
-                timeout=5
-            )
-            data = res.json()
-            if data.get("status") != "success":
-                return None
-            return {
-                "ip": data.get("query", ip),
-                "country": data.get("country", "不明"),
-                "region": data.get("regionName", "不明"),  # 県
-                "city": data.get("city", "不明"),          # 市
-                "lat": data.get("lat"),
-                "lon": data.get("lon"),
-                "proxy": data.get("proxy", False),
-                "hosting": data.get("hosting", False),
-                "isp": data.get("isp", "不明"),
-                "org": data.get("org", "不明"),
-                "as": data.get("as", "不明"),
-            }
-        except:
-            return None
+    try:
+        response = requests.get(f"http://ip-api.com/json/{ip}?lang=ja")
+        data = response.json()
+        return {"country": data.get("country", "不明"), "region": data.get("regionName", "不明")}
+    except:
+        return {"country": "不明", "region": "不明"}
 
-    def query_ipinfo(ip):
-        try:
-            token = os.getenv("IPINFO_TOKEN", "")
-            res = requests.get(f"https://ipinfo.io/{ip}/json?token={token}", timeout=5)
-            data = res.json()
-            loc = data.get("loc", "")
-            lat, lon = (None, None)
-            if loc:
-                lat, lon = map(float, loc.split(","))
-            return {
-                "ip": data.get("ip", ip),
-                "country": data.get("country", "不明"),
-                "region": data.get("region", "不明"),   # 県
-                "city": data.get("city", "不明"),       # 市
-                "lat": lat,
-                "lon": lon,
-                "proxy": False,
-                "hosting": False,
-                "isp": data.get("org", "不明"),
-                "org": data.get("org", "不明"),
-                "as": data.get("org", "不明"),
-            }
-        except:
-            return None
+def save_log(discord_id, data):
+    logs = {}
+    if os.path.exists(ACCESS_LOG_FILE):
+        with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+    logs[discord_id] = data
+    with open(ACCESS_LOG_FILE, "w", encoding="utf-8") as f:
+        json.dump(logs, f, indent=4, ensure_ascii=False)
 
-    # プライベートIPをグローバルに置換
+@app.route("/")
+def index():
+    url = f"https://discord.com/oauth2/authorize?client_id={DISCORD_CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify"
+    return render_template("index.html", discord_auth_url=url)
+
+@app.route("/callback")
+def callback():
+    code = request.args.get("code")
+    if not code:
+        return "コードがありません", 400
+
+    token = requests.post("https://discord.com/api/oauth2/token", data={
+        "client_id": DISCORD_CLIENT_ID,
+        "client_secret": DISCORD_CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": REDIRECT_URI,
+        "scope": "identify"
+    }, headers={"Content-Type": "application/x-www-form-urlencoded"}).json()
+
+    access_token = token.get("access_token")
+    if not access_token:
+        return "アクセストークン取得失敗", 400
+
+    user = requests.get("https://discord.com/api/users/@me", headers={"Authorization": f"Bearer {access_token}"}).json()
+
+    ip = get_client_ip()
     if ip.startswith(("127.", "192.", "10.", "172.")):
-        try:
-            ip = requests.get("https://api.ipify.org", timeout=5).text
-        except:
-            pass
+        ip = requests.get("https://api.ipify.org").text
+    geo = get_geo_info(ip)
+    user_agent = request.headers.get("User-Agent", "不明")
 
-    geo1 = query_ip_api(ip)
-    geo2 = query_ipinfo(ip)
+    data = {
+        "username": f"{user['username']}#{user['discriminator']}",
+        "id": user["id"],
+        "ip": ip,
+        "country": geo["country"],
+        "region": geo["region"],
+        "user_agent": user_agent
+    }
 
-    # --- クロスチェック処理 ---
-    if geo1 and geo2:
-        # 県（region）だけクロスチェック
-        if geo1["region"] == geo2["region"]:
-            region = geo1["region"]
-        else:
-            region = "不明"
+    save_log(user["id"], data)
 
-        # 市は ip-api 優先、なければ ipinfo
-        city = geo1["city"] if geo1["city"] != "不明" else geo2["city"]
+    # Botが準備できている場合だけ送信
+    try:
+        bot.loop.create_task(bot.send_log(
+            f"✅ 新しいアクセスログ:\n"
+            f"名前: {data['username']}\n"
+            f"ID: {data['id']}\n"
+            f"IP: {ip}\n"
+            f"国: {geo['country']}\n"
+            f"地域: {geo['region']}\n"
+            f"UA: {user_agent}"
+        ))
+    except Exception as e:
+        print("Botが準備できていません:", e)
 
-        geo = geo1.copy()
-        geo["region"] = region
-        geo["city"] = city
-    elif geo1:
-        geo = geo1
-    elif geo2:
-        geo = geo2
-    else:
-        geo = {
-            "ip": ip,
-            "country": "不明",
-            "region": "不明",
-            "city": "不明",
-            "lat": None,
-            "lon": None,
-            "proxy": False,
-            "hosting": False,
-            "isp": "不明",
-            "org": "不明",
-            "as": "不明",
-        }
+    return f"{data['username']} さん、ようこそ！"
 
-    # Google Mapリンク生成
-    if geo["lat"] and geo["lon"]:
-        geo["map_url"] = f"https://www.google.com/maps?q={geo['lat']},{geo['lon']}"
-    elif geo["city"] != "不明":
-        geo["map_url"] = f"https://www.google.com/maps/search/{geo['city']},{geo['region']},{geo['country']}"
-    else:
-        geo["map_url"] = "不明"
+@app.route("/logs")
+def show_logs():
+    logs = {}
+    if os.path.exists(ACCESS_LOG_FILE):
+        with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+    return render_template("logs.html", logs=logs)
 
-    return geo
+def run_bot():
+    bot.run(os.getenv("DISCORD_BOT_TOKEN"))
+
+if __name__ == "__main__":
+    threading.Thread(target=run_bot, daemon=True).start()
+    app.run(host="0.0.0.0", port=10000)
